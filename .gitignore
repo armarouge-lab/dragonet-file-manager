@@ -1,0 +1,4 @@
+.build/
+*.class
+dragonet.jar
+*.log
