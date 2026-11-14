@@ -8,6 +8,7 @@ classesDirectory="$buildDirectory/classes"
 sourcesList="$buildDirectory/sources.list"
 jarPath="$projectRoot/dragonet.jar"
 mainClass="br.redhot.dragonet.Main"
+lanternaJar="$projectRoot/lib/lanterna-3.1.2.jar"
 
 if [ ! -d "$sourceDirectory" ]; then
     printf '[FAIL] source directory not found: %s\n' "$sourceDirectory" >&2
@@ -15,11 +16,17 @@ if [ ! -d "$sourceDirectory" ]; then
     exit 1
 fi
 
+if [ ! -f "$lanternaJar" ]; then
+    printf '[FAIL] Lanterna dependency not found: %s\n' "$lanternaJar" >&2
+    printf '       Run: curl -fsSLo lib/lanterna-3.1.2.jar \\\n' >&2
+    printf '            https://repo1.maven.org/maven2/com/googlecode/lanterna/lanterna/3.1.2/lanterna-3.1.2.jar\n' >&2
+    exit 1
+fi
+
 sourceCount=$(find "$sourceDirectory" -name '*.java' -type f | wc -l | tr -d ' ')
 
 if [ "$sourceCount" -eq 0 ]; then
     printf '[warn] no .java sources under %s — nothing to compile\n' "$sourceDirectory" >&2
-    printf '       Next step: add src/br/redhot/dragonet/Main.java\n' >&2
     exit 0
 fi
 
@@ -30,7 +37,14 @@ printf '[info] compiling %s source file(s)...\n' "$sourceCount"
 
 find "$sourceDirectory" -name '*.java' -type f > "$sourcesList"
 
-javac -encoding UTF-8 -Xlint:all -d "$classesDirectory" @"$sourcesList"
+javac -encoding UTF-8 -Xlint:all \
+      -cp "$lanternaJar" \
+      -d "$classesDirectory" \
+      @"$sourcesList"
+
+# Extract Lanterna's classes into the staging dir so the final jar is a fat jar.
+printf '[info] bundling Lanterna into dragonet.jar\n'
+( cd "$classesDirectory" && jar --extract --file "$lanternaJar" )
 
 printf '[info] building jar: %s\n' "$jarPath"
 jar --create --file "$jarPath" --main-class "$mainClass" -C "$classesDirectory" .

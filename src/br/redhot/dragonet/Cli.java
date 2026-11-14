@@ -7,10 +7,11 @@ import java.util.Objects;
 /**
  * Argument parser and dispatcher for the {@code dragon} CLI.
  *
- * <p>V0.1.0a supports only {@code --version} and {@code --help}. Every
- * other path is a placeholder that fails with a clear message. The full
- * dispatcher (subcommands {@code --list}, {@code --cp}, {@code --rm}, ...)
- * arrives in later commits, one subcommand at a time.
+ * <p>V0.1.0a supports only {@code --version} and {@code --help}, plus
+ * the {@code --debug} modifier. Running with no arguments (or with a
+ * bare path) opens the TUI. Every other path fails with a clear message;
+ * the full dispatcher (subcommands {@code --list}, {@code --cp},
+ * {@code --rm}, ...) arrives in later commits, one subcommand at a time.
  *
  * <p>{@link #run(String[])} is the testable entry point: it returns an
  * {@link ExitCode} and never calls {@link System#exit}. {@link Main}
@@ -82,9 +83,7 @@ public final class Cli {
     }
 
     private ExitCode openTui() {
-        logger.fail("interactive TUI is not yet implemented in this build");
-        logger.info("this is V0.1.0a (foundation); the TUI arrives in a later commit");
-        return ExitCode.EX_OP_FAILED;
+        return new Tui(logger).run();
     }
 
     private ExitCode printVersion() {
