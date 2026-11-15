@@ -1,4 +1,4 @@
 .build/
 *.class
 dragonet.jar
-*.log
+*.log.vscode/
