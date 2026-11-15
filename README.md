@@ -72,7 +72,7 @@ dragonet --ls-json ~/Downloads
 ### Navigation
 
 | Key | Action |
-| --- | --- |
+|---|---|
 | `↑` `↓` | Move cursor |
 | `Home` `End` | Jump to first / last |
 | `PageUp` `PageDown` | Page |
@@ -84,8 +84,8 @@ dragonet --ls-json ~/Downloads
 ### Operations
 
 | Key | Action |
-| --- | --- |
-| `Ctrl+C` / `Esc` | Cancel or clear filter |
+|---|---|
+| `Esc` | Cancel or clear filter |
 | `Ctrl+D` | Move to trash |
 | `Ctrl+P` | Permanent delete (type `YES`) |
 | `Ctrl+R` | Rename |
@@ -104,7 +104,7 @@ dragonet --ls-json ~/Downloads
 ### View
 
 | Key | Action |
-| --- | --- |
+|---|---|
 | `Ctrl+L` | Toggle preview pane |
 | `Alt+I` | Cycle metadata level |
 | `Alt+H` | Toggle hidden files |
@@ -114,7 +114,7 @@ dragonet --ls-json ~/Downloads
 ### History and bookmarks
 
 | Key | Action |
-| --- | --- |
+|---|---|
 | `Ctrl+B` / `Alt+←` | Back |
 | `Ctrl+F` / `Alt+→` | Forward |
 | `Alt+B` | Bookmarks menu |
@@ -122,14 +122,14 @@ dragonet --ls-json ~/Downloads
 ### Meta
 
 | Key | Action |
-| --- | --- |
+|---|---|
 | `Ctrl+G` | Help |
 | `Ctrl+X` | Exit |
 | `Alt+Z` | Suspend TUI and open `$SHELL` |
 
 ## Command-line reference
 
-```text
+```
 dragonet [<path>]                            open the TUI
 dragonet --list [<path>]                     list (table)
 dragonet --ls-json [<path>]                  list (JSON)
@@ -159,12 +159,12 @@ To generate a fresh config:
 dragonet --dump-config > ~/.config/redhot/dragonet/dragonet.conf
 ```
 
-Unknown keys are ignored with a warning. Invalid values abort the app with exit code `4`.
+Unknown keys are ignored with a warning. Invalid values abort the app with exit code 4.
 
 Key highlights:
 
 | Key | Default | Meaning |
-| --- | --- | --- |
+|---|---|---|
 | `preview` | `off` | Preview pane visibility |
 | `show_hidden` | `false` | Show dotfiles |
 | `sort` | `name` | Sort key |
@@ -174,10 +174,10 @@ Key highlights:
 
 ## Integration with Imp
 
-When the Imp Media Dispatcher is available on `$PATH`, Dragonet calls `imp <path>` for `Enter` on files. The dispatch mode is chosen automatically:
+When the [Imp Media Dispatcher](https://github.com/armarouge-lab/imp) is available on `$PATH`, Dragonet calls `imp <path>` for `Enter` on files. The dispatch mode is chosen automatically:
 
-- **Text files** (`.txt`, `.md`, `.c`, `.json`, …): blocking — the TUI suspends so the editor or pager owns the terminal.
-- **Images and binary files**: detached — Imp opens a GUI viewer (`imv`, `zathura`, `mpv`) and the TUI keeps running.
+- **Text files** (`.txt`, `.md`, `.c`, `.json`…): blocking — the TUI suspends so the editor or pager owns the terminal.
+- **Images and binary files**: detached — Imp opens a GUI viewer (imv, zathura, mpv) and the TUI keeps running.
 
 Override with `imp_mode=block` or `imp_mode=detach` in the config.
 
@@ -186,7 +186,7 @@ Without Imp, Dragonet falls back to `$VISUAL` / `$EDITOR` for text and `xdg-open
 ## Files
 
 | Path | Purpose |
-| --- | --- |
+|---|---|
 | `~/.config/redhot/dragonet/dragonet.conf` | User configuration |
 | `~/.config/redhot/dragonet/bookmarks.conf` | Named bookmarks |
 | `~/.local/state/redhot/dragonet/session.conf` | Per-session state |
@@ -197,11 +197,14 @@ Without Imp, Dragonet falls back to `$VISUAL` / `$EDITOR` for text and `xdg-open
 ## Building from source
 
 ```sh
-./build.sh          # produces dragonet.jar
-./test.sh           # runs 200+ unit tests
+./build.sh                    # produces dragonet.jar
+./test.sh                     # runs 200+ unit tests
+sh tests/integration/run.sh   # CLI integration tests
 ```
 
 `build.sh` uses `javac` and `jar` directly; no Maven, no Gradle.
+
+After bumping the version in `Cli.java`, run `./install.sh` again to update the installed binary — otherwise `dragonet --version` will report the previous value until reinstalled.
 
 ## Roadmap
 
@@ -210,6 +213,7 @@ Without Imp, Dragonet falls back to `$VISUAL` / `$EDITOR` for text and `xdg-open
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the full history.
 
-License
+## License
 
-BSD-2-Clause. See [LICENSE](LICENSE).
+BSD-2-Clause. See [`LICENSE`](LICENSE).
+EOF

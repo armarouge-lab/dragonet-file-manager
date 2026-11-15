@@ -1,0 +1,130 @@
+CHANGELOG — Dragonet
+====================
+
+Todas as mudanças notáveis do Dragonet são documentadas aqui.
+O formato segue Keep a Changelog e o projeto adota Versionamento
+Semântico (SemVer).
+
+------------------------------------------------------------------------
+[1.0.0] — 2026-11-15
+------------------------------------------------------------------------
+
+Primeira versão estável. Gerenciador de arquivos TUI com CLI headless,
+lixeira XDG, journal de undo e integração com o Imp Media Dispatcher.
+
+Adicionado
+----------
+
+- TUI interativa com tree rendering em ASCII, coluna de metadados e
+  painel de preview inline.
+- Navegação: setas, Enter, Backspace, Tab (foco no preview), histórico
+  (Ctrl+B / Ctrl+F), bookmarks (Alt+B).
+- Operações de arquivo: copiar, cortar, colar (Alt+C / Alt+X / Alt+V)
+  com modal de resolução de conflito (overwrite / skip / rename /
+  abort, mais letra maiúscula para aplicar ao restante).
+- Renomear (Ctrl+R), mkdir (Alt+M), touch (Ctrl+N), symlink (Alt+S).
+- Deletar: mover para lixeira (Ctrl+D) ou deletar permanente com
+  confirmação (Ctrl+P, exige digitar YES).
+- Undo (Alt+U) para move, rename, trash e mkdir; journal append-only
+  com fsync por entrada e trim FIFO.
+- Seleção por tags (Space / Ctrl+T / Ctrl+A) com menu de bulk em
+  Alt+T.
+- Busca (Ctrl+W) com auto-expand de diretórios colapsados; n / N para
+  pular entre matches.
+- Painel de preview (Ctrl+L): texto, hexdump binário, metadados de
+  imagem, estatísticas de diretório. Overlay opaco em terminais
+  estreitos.
+- Toggle de ocultos (Alt+H) persistido em session.conf.
+- Ciclagem de metadados (Alt+I): size / size+date / full / clean.
+- Suspend para shell (Alt+Z).
+- Integração com Imp (auto / block / detach), configurável via
+  imp_mode= em dragonet.conf. Block para texto (TTY), detach para
+  mídia (GUI).
+- CLI headless:
+    --list                (tabela)
+    --ls-json             (JSON)
+    --cp                  copiar
+    --mv                  mover
+    --rm                  mover para lixeira
+    --rm-permanent        deletar permanente
+    --trash-list          listar lixeira
+    --restore <uuid>      restaurar da lixeira
+    --mkdir               criar diretórios
+    --touch               criar arquivos vazios
+    --dump-config         imprimir config padrão
+    --selftest            verificar ambiente
+    --version             imprimir versão
+    --help                imprimir ajuda
+  Modificadores globais:
+    --debug, --dry-run, --json, --yes, --config <path>
+- Empacotamento: install.sh (dispatcher Debian / FreeBSD / OpenBSD),
+  uninstall.sh (com --purge), man dragonet, launcher dragonet e
+  alias dgn.
+- Mais de 200 testes unitários, testes de integração em shell,
+  conformidade com a lixeira XDG.
+
+Limitações conhecidas
+---------------------
+
+- Ctrl+C pode fechar o app em terminais containerizados onde
+  "stty -isig" não tem efeito. Use Esc como tecla de cancelamento
+  primária.
+- Busca não desce em diretórios colapsados além do auto-expand no
+  nível do cwd.
+- Lixeira por mount (.Trash-<uid>) ainda não é enumerada.
+- EX_CANCELED (exit 5) é inalcançável na prática; SIGINT termina a
+  JVM com código 130.
+- Preservação de sparse file é best-effort; o arquivo é copiado
+  não-esparso com um aviso.
+
+------------------------------------------------------------------------
+[0.7.0] — 2026-11-15
+------------------------------------------------------------------------
+
+- Integração com Imp Media Dispatcher (V0.6).
+- Reelaboração do keymap: Ctrl como primário, Alt para conflitos com
+  operações de texto do terminal (V0.7).
+- Esc como cancelamento primário; "stty -isig" best-effort.
+- Shutdown hook salva session e history em SIGINT/SIGTERM.
+- Toggle de ocultos (Alt+H) e auto-expand de busca implementados.
+
+------------------------------------------------------------------------
+[0.5.0] — 2026-11-15
+------------------------------------------------------------------------
+
+- Painel de preview (Ctrl+L), detecção de texto/binário/imagem.
+- Busca (Ctrl+W), bookmarks (Alt+B), histórico (Ctrl+B / Ctrl+F).
+- Dispatch de arquivos: cascata de editor, xdg-open, modal de
+  executável, open-with.
+- Suspend para shell (Alt+Z).
+
+------------------------------------------------------------------------
+[0.4.0] — 2026-11-15
+------------------------------------------------------------------------
+
+- Journal de undo (Alt+U), crash recovery, trim FIFO.
+
+------------------------------------------------------------------------
+[0.3.0] — 2026-11-15
+------------------------------------------------------------------------
+
+- Seleção por tags, cutbuffer.
+- Operações de cópia e movimentação com modal de conflito.
+- Aviso de sparse file.
+
+------------------------------------------------------------------------
+[0.2.0] — 2026-11-15
+------------------------------------------------------------------------
+
+- Lixeira XDG (Ctrl+D, --rm, --restore, --trash-list).
+- Deleção permanente.
+- Framework de prompt e modal.
+- Operações de criação (mkdir, touch, symlink).
+
+------------------------------------------------------------------------
+[0.1.0] — 2026-11-15
+------------------------------------------------------------------------
+
+- TUI inicial: navegação, lista plana, metadados, tree rendering,
+  toggle de ocultos, persistência de sessão, leitor de config,
+  detecção de ambiente.
