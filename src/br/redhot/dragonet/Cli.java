@@ -29,7 +29,7 @@ import java.util.Objects;
 public final class Cli {
 
     /** CLI command name, as typed by the user. */
-    public static final String PROGRAM_NAME = "dragon";
+    public static final String PROGRAM_NAME = "dragonet";
 
     /** Application name, as printed by {@code --version}. */
     public static final String APPLICATION_NAME = "dragonet";
