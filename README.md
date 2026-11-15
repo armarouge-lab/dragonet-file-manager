@@ -205,9 +205,11 @@ Without Imp, Dragonet falls back to `$VISUAL` / `$EDITOR` for text and `xdg-open
 
 ## Roadmap
 
-- **V1.0** — the current release line. Headless CLI, TUI, Imp integration, undo journal, XDG trash.
-- **V1.1** — per-mount trash, real `EX_CANCELED` on `SIGINT`, `--trash-empty`, alternate themes.
+- **V1.0.0** (current) — stable release. TUI, headless CLI, Imp integration, undo journal, XDG trash.
+- **V1.1** — per-mount trash enumeration, real `EX_CANCELED` on SIGINT, `--trash-empty`, additional themes, plugin-free extensions.
 
-## License
+See [`CHANGELOG.md`](CHANGELOG.md) for the full history.
+
+License
 
 BSD-2-Clause. See [LICENSE](LICENSE).

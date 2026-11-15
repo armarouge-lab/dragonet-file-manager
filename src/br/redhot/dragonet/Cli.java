@@ -35,7 +35,7 @@ public final class Cli {
     public static final String APPLICATION_NAME = "dragonet";
 
     /** Application version. */
-    public static final String APPLICATION_VERSION = "1.0a";
+    public static final String APPLICATION_VERSION = "1.0.0";
 
     private final List<String> arguments;
     private final Logger logger;
@@ -184,6 +184,14 @@ public final class Cli {
         } catch (IllegalStateException | IOException exception) {
             logger.fail("environment error: " + exception.getMessage());
             return ExitCode.EX_OP_FAILED;
+        }
+        // Single source: propagate the operation's own exit code so
+        // callers can distinguish "source missing" (EX_PRECOND) from
+        // "syscall failed" (EX_OP_FAILED).
+        if (sourceStrings.size() == 1) {
+            return HeadlessCommands.copyOrMoveOne(flag.substring(2),
+                    isMove, Path.of(sourceStrings.get(0)), target,
+                    environment, dryRun, logger);
         }
         int failures = 0;
         for (String sourceString : sourceStrings) {

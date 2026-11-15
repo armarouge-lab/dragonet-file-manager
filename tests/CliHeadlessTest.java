@@ -42,7 +42,7 @@ class CliHeadlessTest {
     void versionPrintsWithoutConfig() {
         Captured result = run("--version");
         assertEquals(ExitCode.EX_OK, result.code);
-        assertTrue(result.out.contains("dragonet 1.0a"));
+        assertTrue(result.out.contains("dragonet 1.0.0"));
     }
 
     @Test
