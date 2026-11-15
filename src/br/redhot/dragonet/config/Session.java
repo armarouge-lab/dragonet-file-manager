@@ -34,6 +34,10 @@ public record Session(
         return new Session(sort, sortReverse, showHidden, preview, newInfoLevel);
     }
 
+    public Session withPreview(boolean newPreview) {
+        return new Session(sort, sortReverse, showHidden, newPreview, infoLevel);
+    }
+
     public static Session load(Path sessionFile) {
         Objects.requireNonNull(sessionFile, "sessionFile");
         if (!Files.isReadable(sessionFile)) {

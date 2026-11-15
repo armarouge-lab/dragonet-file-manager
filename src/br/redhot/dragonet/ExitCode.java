@@ -36,6 +36,9 @@ public enum ExitCode {
     /** The user canceled the operation. */
     EX_CANCELED(7),
 
+    /** No handler is available for the requested file type. */
+    EX_NO_HANDLER(8),
+
     /** Command-line arguments are invalid (sysexits.h EX_USAGE). */
     EX_USAGE(64);
 

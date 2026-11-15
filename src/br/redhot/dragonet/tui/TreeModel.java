@@ -37,12 +37,55 @@ public final class TreeModel {
     private final AtomicLong version = new AtomicLong(0L);
     private int cursorIndex;
     private int scrollOffset;
+    private String searchQuery = "";
+    private List<VisibleEntry> cachedFiltered = null;
 
     public TreeModel(FileList baseFileList, Config config) {
         this.baseFileList = Objects.requireNonNull(baseFileList, "baseFileList");
         this.config = Objects.requireNonNull(config, "config");
         this.cursorIndex = baseFileList.cursorIndex();
         this.scrollOffset = 0;
+    }
+
+    /**
+     * Sets the search query. Empty clears the filter.
+     *
+     * <p>The filter applies on top of the visible tree: matching entries
+     * and their ancestors are shown. Does not auto-expand collapsed
+     * directories (deferred to V0.5c).
+     */
+    public void setSearchQuery(String query) {
+        String safe = query == null ? "" : query.trim();
+        if (safe.equals(this.searchQuery)) {
+            return;
+        }
+        this.searchQuery = safe;
+        this.cachedFiltered = null;
+        clampCursorIndex();
+        version.incrementAndGet();
+    }
+
+    private void clampCursorIndex() {
+        int size = visibleEntries().size();
+        if (size == 0) {
+            cursorIndex = 0;
+            scrollOffset = 0;
+            return;
+        }
+        if (cursorIndex >= size) {
+            cursorIndex = size - 1;
+        }
+        if (cursorIndex < 0) {
+            cursorIndex = 0;
+        }
+    }
+
+    public String searchQuery() {
+        return searchQuery;
+    }
+
+    public boolean isFiltering() {
+        return !searchQuery.isEmpty();
     }
 
     public Path directory() {
@@ -235,6 +278,12 @@ public final class TreeModel {
     }
 
     public List<VisibleEntry> visibleEntries() {
+        if (!searchQuery.isEmpty()) {
+            if (cachedFiltered == null) {
+                cachedFiltered = computeFiltered();
+            }
+            return cachedFiltered;
+        }
         List<VisibleEntry> result = new ArrayList<>();
         List<FileEntry> topLevel = baseFileList.entries();
         for (int index = 0; index < topLevel.size(); index = index + 1) {
@@ -243,6 +292,43 @@ public final class TreeModel {
             visit(entry, 0, List.of(), isLast, result);
         }
         return result;
+    }
+
+    private List<VisibleEntry> computeFiltered() {
+        List<VisibleEntry> result = new ArrayList<>();
+        List<FileEntry> topLevel = baseFileList.entries();
+        String lower = searchQuery.toLowerCase();
+        for (int index = 0; index < topLevel.size(); index = index + 1) {
+            FileEntry entry = topLevel.get(index);
+            boolean isLast = index == topLevel.size() - 1;
+            collectFiltered(entry, 0, List.of(), isLast, lower, result);
+        }
+        return result;
+    }
+
+    private boolean collectFiltered(FileEntry entry, int depth, List<Boolean> ancestorIsLast,
+                                     boolean isLastSibling, String lower,
+                                     List<VisibleEntry> out) {
+        boolean selfMatches = entry.name().toLowerCase().contains(lower);
+        List<VisibleEntry> childMatches = new ArrayList<>();
+        if (entry.isDirectory()) {
+            List<FileEntry> children = childrenCache.get(entry.path());
+            if (children != null) {
+                List<Boolean> childAncestor = append(ancestorIsLast, isLastSibling);
+                for (int index = 0; index < children.size(); index = index + 1) {
+                    FileEntry child = children.get(index);
+                    boolean childIsLast = index == children.size() - 1;
+                    collectFiltered(child, depth + 1, childAncestor, childIsLast, lower,
+                            childMatches);
+                }
+            }
+        }
+        if (selfMatches || !childMatches.isEmpty()) {
+            out.add(new VisibleEntry(entry, null, depth, isLastSibling, ancestorIsLast));
+            out.addAll(childMatches);
+            return true;
+        }
+        return false;
     }
 
     private void visit(FileEntry entry, int depth, List<Boolean> ancestorIsLast,

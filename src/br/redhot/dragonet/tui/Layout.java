@@ -508,7 +508,14 @@ public final class Layout {
             col = drawShortcut(screen, col, row, "^R", " Rename", maxCol);
         }
         if (width >= 100) {
-            drawShortcut(screen, col, row, "^G", " Help", maxCol);
+            col = drawShortcut(screen, col, row, "^G", " Help", maxCol);
+        }
+        if (width >= 112) {
+            col = drawShortcut(screen, col, row, "^W", " Find", maxCol);
+        }
+        if (width >= 124) {
+            col = drawShortcut(screen, col, row, "^B", " Back", maxCol);
+            drawShortcut(screen, col, row, "^F", " Fwd", maxCol);
         }
     }
 

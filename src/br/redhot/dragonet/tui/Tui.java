@@ -2,7 +2,9 @@ package br.redhot.dragonet.tui;
 
 import br.redhot.dragonet.ExitCode;
 import br.redhot.dragonet.Logger;
+import br.redhot.dragonet.config.Bookmarks;
 import br.redhot.dragonet.config.Config;
+import br.redhot.dragonet.config.History;
 import br.redhot.dragonet.config.Session;
 import br.redhot.dragonet.engine.ConflictResolution;
 import br.redhot.dragonet.engine.CopyOperation;
@@ -53,10 +55,14 @@ public final class Tui {
     private final TrashStore trashStore;
     private final UndoLog undoLog;
     private final PreviewModel previewModel;
+    private final FileOpener fileOpener;
+    private final Bookmarks bookmarks;
+    private final History history;
     private final TagState tagState = new TagState();
     private final CutBuffer cutBuffer = new CutBuffer();
     private Session session;
 
+    private Screen screen;
     private TreeModel treeModel;
     private long lastRenderedVersion = -1L;
     private String statusMessage;
@@ -74,6 +80,8 @@ public final class Tui {
     private boolean previewVisible;
     private boolean previewFocused;
     private int previewScroll;
+    private boolean searchPromptActive;
+    private boolean navigatingHistory;
 
     public Tui(Config config, Session session, Environment environment, Logger logger) {
         this.config = Objects.requireNonNull(config, "config");
@@ -83,9 +91,14 @@ public final class Tui {
         this.trashStore = new TrashStore(environment.trashPath(), environment.homeDirectory());
         this.undoLog = new UndoLog(environment.statePath("undo.log"), config.undoLimit());
         this.previewModel = new PreviewModel(config.previewMaxBytes());
-        this.previewVisible = config.preview();
+        this.fileOpener = new FileOpener();
+        this.bookmarks = Bookmarks.load(environment.userConfigPath("bookmarks.conf"));
+        this.history = History.load(environment.statePath("history"), config.historyLimit());
+        this.previewVisible = session.preview();
         this.previewFocused = false;
         this.previewScroll = 0;
+        this.searchPromptActive = false;
+        this.navigatingHistory = false;
     }
 
     public ExitCode run(Path initialDirectory) {
@@ -99,10 +112,10 @@ public final class Tui {
             logger.fail(exception.getMessage());
             return ExitCode.EX_PRECOND;
         }
+        recordVisit(startDirectory);
 
-        try (Terminal terminal = new DefaultTerminalFactory().createTerminal();
-             Screen screen = new TerminalScreen(terminal)) {
-
+        try (Terminal terminal = new DefaultTerminalFactory().createTerminal()) {
+            this.screen = new TerminalScreen(terminal);
             screen.startScreen();
 
             TreeRenderer treeRenderer = new TreeRenderer(config, environment.supportsUtf8());
@@ -194,26 +207,41 @@ public final class Tui {
                     if (status == Prompt.Result.Status.CLOSE_APP) {
                         running = false;
                     } else if (status == Prompt.Result.Status.CANCELLED) {
+                        if (searchPromptActive) {
+                            treeModel.setSearchQuery("");
+                            searchPromptActive = false;
+                        }
                         activePrompt = null;
                         pendingPromptAction = null;
                         pendingSymlinkName = null;
                         lastRenderedVersion = -1L;
                     } else if (status == Prompt.Result.Status.SUBMITTED) {
                         String text = result.text();
-                        Consumer<String> action = pendingPromptAction;
-                        activePrompt = null;
-                        pendingPromptAction = null;
-                        lastRenderedVersion = -1L;
-                        if (action != null) {
-                            action.accept(text);
+                        if (searchPromptActive) {
+                            searchPromptActive = false;
+                            activePrompt = null;
+                            pendingPromptAction = null;
+                            treeModel.setSearchQuery(text);
+                            lastRenderedVersion = -1L;
+                        } else {
+                            Consumer<String> action = pendingPromptAction;
+                            activePrompt = null;
+                            pendingPromptAction = null;
+                            lastRenderedVersion = -1L;
+                            if (action != null) {
+                                action.accept(text);
+                            }
                         }
                     } else {
+                        if (searchPromptActive) {
+                            treeModel.setSearchQuery(activePrompt.text());
+                        }
                         lastRenderedVersion = -1L;
                     }
                     continue;
                 }
 
-                running = handleIdleKey(keyStroke, screen);
+                running = handleIdleKey(keyStroke);
             }
 
             try {
@@ -221,21 +249,28 @@ public final class Tui {
             } catch (IOException exception) {
                 logger.warn("could not save session: " + exception.getMessage());
             }
+            try {
+                history.save();
+            } catch (IOException exception) {
+                logger.warn("could not save history: " + exception.getMessage());
+            }
 
             return ExitCode.EX_OK;
         } catch (IOException exception) {
             logger.fail("terminal error: " + exception.getMessage());
             return ExitCode.EX_OP_FAILED;
+        } finally {
+            this.screen = null;
         }
     }
 
-    private boolean handleIdleKey(KeyStroke keyStroke, Screen screen) {
+    private boolean handleIdleKey(KeyStroke keyStroke) {
         KeyType keyType = keyStroke.getKeyType();
 
         if (previewFocused) {
             if (keyType == KeyType.Escape || keyType == KeyType.Tab) {
                 previewFocused = false;
-                if (isNarrowTerminal(screen)) {
+                if (isNarrowTerminal()) {
                     previewVisible = false;
                 }
                 lastRenderedVersion = -1L;
@@ -272,6 +307,12 @@ public final class Tui {
         if (keyType == KeyType.EOF) {
             return false;
         }
+        if (keyType == KeyType.Escape && treeModel.isFiltering() && activePrompt == null) {
+            treeModel.setSearchQuery("");
+            statusMessage = "Search cleared";
+            lastRenderedVersion = -1L;
+            return true;
+        }
         if (keyType == KeyType.Tab) {
             if (previewVisible) {
                 previewFocused = !previewFocused;
@@ -285,11 +326,23 @@ public final class Tui {
                 return handleExitRequest();
             }
             if (character == 'l') {
-                togglePreview(screen);
+                togglePreview();
                 return true;
             }
             if (character == 'g') {
                 showHelp();
+                return true;
+            }
+            if (character == 'w') {
+                startSearch();
+                return true;
+            }
+            if (character == 'b') {
+                navigateBack();
+                return true;
+            }
+            if (character == 'f') {
+                navigateForward();
                 return true;
             }
             if (character == 'r') {
@@ -325,7 +378,7 @@ public final class Tui {
                 return true;
             }
             switch (character) {
-                case 'i' -> toggleInfoLevel(screen);
+                case 'i' -> toggleInfoLevel();
                 case 's' -> startMkdir();
                 case 'n' -> startTouch();
                 case 'y' -> startSymlink();
@@ -333,6 +386,11 @@ public final class Tui {
                 case 't' -> handleTagMenu();
                 case 'a' -> handleTagAllShortcut();
                 case 'u' -> handleUndo();
+                case 'o' -> startOpenWith();
+                case 'b' -> handleBookmarkMenu();
+                case 'z' -> runShell();
+                case '[' -> navigateBack();
+                case ']' -> navigateForward();
                 default -> {
                     // Ignored.
                 }
@@ -341,6 +399,20 @@ public final class Tui {
         }
         if (keyType == KeyType.Character && keyStroke.getCharacter() == ' ') {
             handleTagToggle();
+            return true;
+        }
+        if (keyType == KeyType.Character) {
+            char character = keyStroke.getCharacter();
+            if (treeModel.isFiltering()) {
+                if (character == 'n') {
+                    moveToNextMatch(true);
+                    return true;
+                }
+                if (character == 'N') {
+                    moveToNextMatch(false);
+                    return true;
+                }
+            }
             return true;
         }
         if (keyType == KeyType.ArrowDown) {
@@ -375,13 +447,331 @@ public final class Tui {
         return true;
     }
 
-    private boolean isNarrowTerminal(Screen screen) {
+    // ---- Search ----
+
+    private void startSearch() {
+        searchPromptActive = true;
+        activePrompt = new Prompt("Find: ", treeModel.searchQuery());
+        lastRenderedVersion = -1L;
+    }
+
+    private void moveToNextMatch(boolean forward) {
+        List<VisibleEntry> entries = treeModel.visibleEntries();
+        if (entries.isEmpty()) {
+            return;
+        }
+        int currentIndex = treeModel.cursorIndex();
+        int count = entries.size();
+        int step = forward ? 1 : -1;
+        int nextIndex = ((currentIndex + step) % count + count) % count;
+        treeModel.moveToIndex(nextIndex);
+        lastRenderedVersion = -1L;
+    }
+
+    // ---- Open with / dispatch ----
+
+    private void startOpenWith() {
+        VisibleEntry current = treeModel.current();
+        if (current == null || current.entry() == null || current.entry().isParent()) {
+            return;
+        }
+        activePrompt = new Prompt("Open with: ");
+        pendingPromptAction = (text) -> {
+            if (text.isBlank()) {
+                statusMessage = "Cancelled";
+                lastRenderedVersion = -1L;
+                return;
+            }
+            runUserCommand(text);
+            lastRenderedVersion = -1L;
+        };
+        lastRenderedVersion = -1L;
+    }
+
+    private void runUserCommand(String userInput) {
+        List<String> argv;
+        try {
+            argv = fileOpener.isShellCommand(userInput)
+                    ? fileOpener.parseShellCommand(userInput)
+                    : fileOpener.parseUserCommand(userInput);
+        } catch (IllegalArgumentException exception) {
+            statusMessage = exception.getMessage();
+            lastRenderedVersion = -1L;
+            return;
+        }
+        if (argv.isEmpty()) {
+            statusMessage = "empty command";
+            lastRenderedVersion = -1L;
+            return;
+        }
+        FileOpener.Result result = runWithSuspendedScreen(
+                () -> fileOpener.runBlocking(argv, treeModel.directory()));
+        statusMessage = result.message();
+    }
+
+    private void handleEnterOpen(FileEntry entry) {
+        if (entry.isExecutable()) {
+            activeModal = new Modal("Run '" + entry.name() + "'?");
+            pendingModalAction = (confirmed) -> {
+                if (confirmed) {
+                    FileOpener.Result result = runWithSuspendedScreen(
+                            () -> fileOpener.runBlocking(
+                                    fileOpener.resolveExecutable(entry.path()).orElseThrow(),
+                                    treeModel.directory()));
+                    statusMessage = result.message();
+                } else {
+                    statusMessage = "Cancelled";
+                }
+                lastRenderedVersion = -1L;
+            };
+            lastRenderedVersion = -1L;
+            return;
+        }
+        FileTypeDetector.Kind kind = FileTypeDetector.detect(entry.path());
+        switch (kind) {
+            case TEXT -> {
+                Optional<List<String>> editorArgv = fileOpener.resolveEditor();
+                if (editorArgv.isEmpty()) {
+                    statusMessage = "Set $VISUAL or $EDITOR to open text files";
+                    lastRenderedVersion = -1L;
+                    return;
+                }
+                List<String> argv = new ArrayList<>(editorArgv.get());
+                argv.add(entry.path().toString());
+                FileOpener.Result result = runWithSuspendedScreen(
+                        () -> fileOpener.runBlocking(argv, treeModel.directory()));
+                statusMessage = result.message();
+            }
+            case IMAGE, BINARY -> {
+                Optional<List<String>> xdgArgv = fileOpener.resolveXdgOpen(entry.path());
+                if (xdgArgv.isEmpty()) {
+                    statusMessage = "xdg-open not found. Install: pkg install xdg-utils";
+                    lastRenderedVersion = -1L;
+                    return;
+                }
+                FileOpener.Result result = fileOpener.runDetached(
+                        xdgArgv.get(), treeModel.directory());
+                statusMessage = result.message();
+            }
+            default -> {
+                statusMessage = "Unknown file type";
+            }
+        }
+        lastRenderedVersion = -1L;
+    }
+
+    // ---- Bookmarks ----
+
+    private void handleBookmarkMenu() {
+        activeMenuModal = new MenuModal("Bookmarks", "a:add  p:pick  d:delete");
+        pendingMenuAction = (choice) -> {
+            switch (choice) {
+                case 'a' -> startAddBookmark();
+                case 'p' -> startPickBookmark();
+                case 'd' -> startDeleteBookmark();
+                default -> {
+                    statusMessage = "Cancelled";
+                    lastRenderedVersion = -1L;
+                }
+            }
+        };
+        lastRenderedVersion = -1L;
+    }
+
+    private void startAddBookmark() {
+        Path currentDirectory = treeModel.directory();
+        String defaultName = currentDirectory.getFileName() == null
+                ? "bookmark" : currentDirectory.getFileName().toString();
+        activePrompt = new Prompt("Bookmark name: ", defaultName);
+        pendingPromptAction = (name) -> {
+            if (name.isBlank()) {
+                statusMessage = "Cancelled";
+                lastRenderedVersion = -1L;
+                return;
+            }
+            bookmarks.add(name, currentDirectory);
+            try {
+                bookmarks.save();
+                statusMessage = "Bookmarked: " + name;
+            } catch (IOException exception) {
+                statusMessage = "Save failed: " + exception.getMessage();
+            }
+            lastRenderedVersion = -1L;
+        };
+        lastRenderedVersion = -1L;
+    }
+
+    private void startPickBookmark() {
+        List<String> names = bookmarks.names();
+        if (names.isEmpty()) {
+            statusMessage = "No bookmarks";
+            lastRenderedVersion = -1L;
+            return;
+        }
+        StringBuilder options = new StringBuilder();
+        for (int index = 0; index < names.size() && index < 26; index = index + 1) {
+            char letter = (char) ('a' + index);
+            if (options.length() > 0) {
+                options.append("  ");
+            }
+            options.append(letter).append(':').append(names.get(index));
+        }
+        activeMenuModal = new MenuModal("Pick bookmark", options.toString());
+        pendingMenuAction = (choice) -> {
+            int index = choice - 'a';
+            if (index < 0 || index >= names.size()) {
+                statusMessage = "Cancelled";
+                lastRenderedVersion = -1L;
+                return;
+            }
+            String name = names.get(index);
+            Optional<Path> target = bookmarks.get(name);
+            if (target.isEmpty()) {
+                statusMessage = "Missing bookmark: " + name;
+                lastRenderedVersion = -1L;
+                return;
+            }
+            navigateTo(target.get(), false);
+        };
+        lastRenderedVersion = -1L;
+    }
+
+    private void startDeleteBookmark() {
+        List<String> names = bookmarks.names();
+        if (names.isEmpty()) {
+            statusMessage = "No bookmarks";
+            lastRenderedVersion = -1L;
+            return;
+        }
+        StringBuilder options = new StringBuilder();
+        for (int index = 0; index < names.size() && index < 26; index = index + 1) {
+            char letter = (char) ('a' + index);
+            if (options.length() > 0) {
+                options.append("  ");
+            }
+            options.append(letter).append(':').append(names.get(index));
+        }
+        activeMenuModal = new MenuModal("Delete bookmark", options.toString());
+        pendingMenuAction = (choice) -> {
+            int index = choice - 'a';
+            if (index < 0 || index >= names.size()) {
+                statusMessage = "Cancelled";
+                lastRenderedVersion = -1L;
+                return;
+            }
+            String name = names.get(index);
+            bookmarks.remove(name);
+            try {
+                bookmarks.save();
+                statusMessage = "Removed: " + name;
+            } catch (IOException exception) {
+                statusMessage = "Save failed: " + exception.getMessage();
+            }
+            lastRenderedVersion = -1L;
+        };
+        lastRenderedVersion = -1L;
+    }
+
+    // ---- History ----
+
+    private void navigateBack() {
+        Optional<Path> target = history.back();
+        if (target.isEmpty()) {
+            statusMessage = "History: no back";
+            lastRenderedVersion = -1L;
+            return;
+        }
+        navigatingHistory = true;
+        navigateTo(target.get(), true);
+    }
+
+    private void navigateForward() {
+        Optional<Path> target = history.forward();
+        if (target.isEmpty()) {
+            statusMessage = "History: no forward";
+            lastRenderedVersion = -1L;
+            return;
+        }
+        navigatingHistory = true;
+        navigateTo(target.get(), true);
+    }
+
+    private void navigateTo(Path directory, boolean fromHistory) {
+        if (!Files.isDirectory(directory)) {
+            statusMessage = "Not a directory: " + directory;
+            lastRenderedVersion = -1L;
+            return;
+        }
+        try {
+            FileList baseList = FileList.load(directory, config);
+            treeModel = new TreeModel(baseList, config);
+            previewScroll = 0;
+            if (!fromHistory) {
+                recordVisit(directory);
+            }
+            navigatingHistory = false;
+            lastRenderedVersion = -1L;
+        } catch (IOException exception) {
+            statusMessage = "Cannot open: " + exception.getMessage();
+            lastRenderedVersion = -1L;
+        }
+    }
+
+    private void recordVisit(Path directory) {
+        history.visit(directory);
+    }
+
+    // ---- Shell suspend ----
+
+    private void runShell() {
+        String shell = System.getenv("SHELL");
+        if (shell == null || shell.isBlank()) {
+            shell = "/bin/sh";
+        }
+        List<String> argv = List.of(shell);
+        FileOpener.Result result = runWithSuspendedScreen(
+                () -> fileOpener.runBlocking(argv, treeModel.directory()));
+        statusMessage = result.message();
+        lastRenderedVersion = -1L;
+    }
+
+    @FunctionalInterface
+    private interface ScreenSuspendedCall {
+        FileOpener.Result run();
+    }
+
+    private FileOpener.Result runWithSuspendedScreen(ScreenSuspendedCall call) {
+        if (screen == null) {
+            return FileOpener.Result.failed("no active screen");
+        }
+        try {
+            screen.stopScreen();
+        } catch (IOException exception) {
+            return FileOpener.Result.failed("Cannot suspend TUI: " + exception.getMessage());
+        }
+        FileOpener.Result result = FileOpener.Result.failed("unknown");
+        try {
+            result = call.run();
+        } finally {
+            try {
+                screen.startScreen();
+            } catch (IOException exception) {
+                logger.warn("could not resume screen: " + exception.getMessage());
+            }
+            lastRenderedVersion = -1L;
+        }
+        return result;
+    }
+
+    // ---- Preview ----
+
+    private boolean isNarrowTerminal() {
         TerminalSize size = screen.getTerminalSize();
         return size.getColumns() < PREVIEW_MIN_TOTAL_WIDTH || size.getRows() < PREVIEW_MIN_ROWS;
     }
 
-    private void togglePreview(Screen screen) {
-        if (isNarrowTerminal(screen)) {
+    private void togglePreview() {
+        if (isNarrowTerminal()) {
             if (previewVisible && previewFocused) {
                 previewVisible = false;
                 previewFocused = false;
@@ -401,6 +791,7 @@ public final class Tui {
             }
             statusMessage = previewVisible ? "Preview: on" : "Preview: off";
         }
+        session = session.withPreview(previewVisible);
         lastRenderedVersion = -1L;
     }
 
@@ -450,7 +841,7 @@ public final class Tui {
         }
     }
 
-    private void toggleInfoLevel(Screen screen) {
+    private void toggleInfoLevel() {
         int columns = screen.getTerminalSize().getColumns();
         if (columns < 40) {
             statusMessage = "terminal too narrow for metadata";
@@ -734,9 +1125,7 @@ public final class Tui {
     }
 
     private void handleTagMenu() {
-        activeMenuModal = new MenuModal(
-                "Tag menu",
-                "a:all  i:invert  u:untag  c:clear");
+        activeMenuModal = new MenuModal("Tag menu", "a:all  i:invert  u:untag  c:clear");
         pendingMenuAction = (choice) -> {
             switch (choice) {
                 case 'a' -> {
@@ -1066,7 +1455,9 @@ public final class Tui {
         if (entry.isNavigable()) {
             try {
                 FileList baseList = FileList.load(entry.path(), config);
-                return new NavigateResult(new TreeModel(baseList, config), null);
+                TreeModel newModel = new TreeModel(baseList, config);
+                recordVisit(entry.path());
+                return new NavigateResult(newModel, null);
             } catch (IOException exception) {
                 return new NavigateResult(treeModel,
                         "Cannot enter " + entry.name() + ": " + exception.getMessage());
@@ -1076,8 +1467,8 @@ public final class Tui {
             return new NavigateResult(treeModel,
                     "Broken link: " + entry.name() + " -> " + entry.symlinkTarget());
         }
-        return new NavigateResult(treeModel,
-                "Open not implemented yet: " + entry.name());
+        handleEnterOpen(entry);
+        return new NavigateResult(treeModel, null);
     }
 
     private NavigateResult navigateToParent() {
@@ -1093,6 +1484,7 @@ public final class Tui {
             if (currentName != null) {
                 newModel.moveToEntryNamed(currentName.toString());
             }
+            recordVisit(parent);
             return new NavigateResult(newModel, null);
         } catch (IOException exception) {
             return new NavigateResult(treeModel,
