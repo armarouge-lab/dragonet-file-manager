@@ -4,6 +4,7 @@ import br.redhot.dragonet.config.Config;
 import br.redhot.dragonet.env.Environment;
 import br.redhot.dragonet.env.PathResolver;
 
+import com.googlecode.lanterna.SGR;
 import com.googlecode.lanterna.TerminalPosition;
 import com.googlecode.lanterna.TerminalSize;
 import com.googlecode.lanterna.TextCharacter;
@@ -32,8 +33,9 @@ public final class Layout {
         this.treeRenderer = Objects.requireNonNull(treeRenderer, "treeRenderer");
     }
 
-    public void draw(Screen screen, TreeModel treeModel, int infoLevel,
-                     String statusMessage, Prompt activePrompt, Modal activeModal)
+    public void draw(Screen screen, TreeModel treeModel, TagState tagState, int infoLevel,
+                     String statusMessage, Prompt activePrompt, Modal activeModal,
+                     MenuModal activeMenuModal)
             throws IOException {
         TerminalSize size = screen.getTerminalSize();
         int terminalColumns = size.getColumns();
@@ -57,17 +59,19 @@ public final class Layout {
         String nextLevelLabel = MetadataFormatter.levelLabel(nextLevel);
 
         if (terminalRows >= ROWS_FULL_CHROME) {
-            drawFull(screen, leftPadding, contentWidth, terminalRows, treeModel, statusMessage,
-                    segments, plan, nextLevelLabel, activePrompt, activeModal);
+            drawFull(screen, leftPadding, contentWidth, terminalRows, treeModel, tagState,
+                    statusMessage, segments, plan, nextLevelLabel, activePrompt, activeModal);
         } else if (terminalRows >= ROWS_COMPACT_CHROME) {
-            drawCompact(screen, leftPadding, contentWidth, terminalRows, treeModel, statusMessage,
-                    segments, plan, nextLevelLabel, activePrompt, activeModal);
+            drawCompact(screen, leftPadding, contentWidth, terminalRows, treeModel, tagState,
+                    statusMessage, segments, plan, nextLevelLabel, activePrompt, activeModal);
         } else {
-            drawMinimal(screen, leftPadding, contentWidth, terminalRows, treeModel, statusMessage,
-                    segments, plan, nextLevelLabel, activePrompt, activeModal);
+            drawMinimal(screen, leftPadding, contentWidth, terminalRows, treeModel, tagState,
+                    statusMessage, segments, plan, nextLevelLabel, activePrompt, activeModal);
         }
 
-        if (activeModal != null) {
+        if (activeMenuModal != null) {
+            activeMenuModal.draw(screen);
+        } else if (activeModal != null) {
             activeModal.draw(screen);
         } else if (activePrompt != null) {
             int inputRow = terminalRows - 2;
@@ -93,17 +97,17 @@ public final class Layout {
     }
 
     private void drawFull(Screen screen, int left, int width, int rows,
-                           TreeModel treeModel, String statusMessage,
+                           TreeModel treeModel, TagState tagState, String statusMessage,
                            TreeRenderer.Segments segments,
                            MetadataFormatter.DisplayPlan plan,
                            String nextLevelLabel,
                            Prompt activePrompt, Modal activeModal) {
-        drawTitle(screen, left, width, 0, treeModel);
+        drawTitle(screen, left, width, 0, treeModel, tagState);
         drawSeparator(screen, left, width, 1);
 
         int listTop = 3;
         int listBottom = rows - (activePrompt != null ? 2 : 4);
-        drawList(screen, left, width, listTop, listBottom, treeModel, segments, plan);
+        drawList(screen, left, width, listTop, listBottom, treeModel, tagState, segments, plan);
 
         if (activePrompt == null) {
             drawSeparator(screen, left, width, rows - 3);
@@ -114,29 +118,29 @@ public final class Layout {
             if (statusMessage != null) {
                 drawStatusLine(screen, left, width, rows - 2, statusMessage);
             } else {
-                drawShortcuts(screen, left, width, rows - 2, nextLevelLabel);
+                drawShortcuts(screen, left, width, rows - 2, nextLevelLabel, tagState);
             }
         }
     }
 
     private void drawCompact(Screen screen, int left, int width, int rows,
-                              TreeModel treeModel, String statusMessage,
+                              TreeModel treeModel, TagState tagState, String statusMessage,
                               TreeRenderer.Segments segments,
                               MetadataFormatter.DisplayPlan plan,
                               String nextLevelLabel,
                               Prompt activePrompt, Modal activeModal) {
-        drawTitle(screen, left, width, 0, treeModel);
+        drawTitle(screen, left, width, 0, treeModel, tagState);
         drawSeparator(screen, left, width, 1);
 
         int listTop = 2;
         int listBottom = rows - (activePrompt != null ? 2 : 1);
-        drawList(screen, left, width, listTop, listBottom, treeModel, segments, plan);
+        drawList(screen, left, width, listTop, listBottom, treeModel, tagState, segments, plan);
 
         if (activePrompt == null && activeModal == null) {
             if (statusMessage != null) {
                 drawStatusLine(screen, left, width, rows - 1, statusMessage);
             } else {
-                drawShortcuts(screen, left, width, rows - 1, nextLevelLabel);
+                drawShortcuts(screen, left, width, rows - 1, nextLevelLabel, tagState);
             }
         } else if (activeModal != null) {
             drawModalHint(screen, left, width, rows - 1);
@@ -144,22 +148,22 @@ public final class Layout {
     }
 
     private void drawMinimal(Screen screen, int left, int width, int rows,
-                              TreeModel treeModel, String statusMessage,
+                              TreeModel treeModel, TagState tagState, String statusMessage,
                               TreeRenderer.Segments segments,
                               MetadataFormatter.DisplayPlan plan,
                               String nextLevelLabel,
                               Prompt activePrompt, Modal activeModal) {
-        drawTitle(screen, left, width, 0, treeModel);
+        drawTitle(screen, left, width, 0, treeModel, tagState);
 
         int listTop = 1;
         int listBottom = rows - (activePrompt != null ? 2 : 1);
-        drawList(screen, left, width, listTop, listBottom, treeModel, segments, plan);
+        drawList(screen, left, width, listTop, listBottom, treeModel, tagState, segments, plan);
 
         if (activePrompt == null && activeModal == null) {
             if (statusMessage != null) {
                 drawStatusLine(screen, left, width, rows - 1, statusMessage);
             } else {
-                drawShortcuts(screen, left, width, rows - 1, nextLevelLabel);
+                drawShortcuts(screen, left, width, rows - 1, nextLevelLabel, tagState);
             }
         } else if (activeModal != null) {
             drawModalHint(screen, left, width, rows - 1);
@@ -175,13 +179,23 @@ public final class Layout {
         drawChunk(screen, col, row, " No", Colors.DEFAULT, maxCol);
     }
 
-    private void drawTitle(Screen screen, int left, int width, int row, TreeModel treeModel) {
+    private void drawTitle(Screen screen, int left, int width, int row,
+                            TreeModel treeModel, TagState tagState) {
         int childCount = countChildren(treeModel);
         String path = PathResolver.formatForDisplay(
                 treeModel.directory(), environment.homeDirectory());
-        String stats = childCount + (childCount == 1 ? " item" : " items");
+
+        String countText = childCount + (childCount == 1 ? " item" : " items");
+        int tagCount = tagState.count();
+        String tagText = tagCount > 0
+                ? " \u00b7 " + tagCount + " tagged \u00b7 "
+                    + MetadataFormatter.formatSize(tagState.totalSizeBytes(),
+                            config.humanize(), false)
+                : "";
+
         int maxCol = left + width;
-        int statsStart = maxCol - stats.length();
+        int statsWidth = countText.length() + tagText.length();
+        int statsStart = maxCol - statsWidth;
 
         int col = left;
         col = drawChunk(screen, col, row, "  ", Colors.DEFAULT, maxCol);
@@ -201,7 +215,11 @@ public final class Layout {
         }
 
         if (statsStart >= col) {
-            drawChunk(screen, statsStart, row, stats, Colors.GRAY, maxCol);
+            int statsCol = drawChunk(screen, statsStart, row, countText,
+                    Colors.GRAY, maxCol);
+            if (tagCount > 0) {
+                drawChunk(screen, statsCol, row, tagText, Colors.ORANGE, maxCol);
+            }
         }
     }
 
@@ -223,7 +241,7 @@ public final class Layout {
 
     private void drawList(Screen screen, int left, int width,
                            int listTop, int listBottom, TreeModel treeModel,
-                           TreeRenderer.Segments segments,
+                           TagState tagState, TreeRenderer.Segments segments,
                            MetadataFormatter.DisplayPlan plan) {
         int listHeight = listBottom - listTop;
         if (listHeight < 1) {
@@ -238,38 +256,77 @@ public final class Layout {
             if (entryIndex >= entries.size()) {
                 break;
             }
-            drawEntry(screen, left, width, listTop + offset, entries.get(entryIndex),
-                    entryIndex == cursorIndex, segments, plan, now);
+            VisibleEntry entry = entries.get(entryIndex);
+            boolean tagged = entry.entry() != null
+                    && tagState.isTagged(entry.entry().path());
+            drawEntry(screen, left, width, listTop + offset, entry,
+                    entryIndex == cursorIndex, tagged, segments, plan, now);
         }
     }
 
     private void drawEntry(Screen screen, int left, int width, int row, VisibleEntry entry,
-                            boolean isCursor, TreeRenderer.Segments segments,
+                            boolean isCursor, boolean isTagged,
+                            TreeRenderer.Segments segments,
                             MetadataFormatter.DisplayPlan plan, Instant now) {
-        TextColor background = isCursor ? Colors.ORANGE : Colors.DEFAULT;
-        TextColor markerColor = isCursor ? Colors.WHITE : Colors.GRAY_DIM;
-        TextColor treeColor = isCursor ? Colors.WHITE : Colors.GRAY;
-        TextColor metadataColor = isCursor ? Colors.WHITE : Colors.GRAY;
+        String marker;
+        if (isCursor && isTagged) {
+            marker = ">*";
+        } else if (isCursor) {
+            marker = "> ";
+        } else if (isTagged) {
+            marker = "* ";
+        } else {
+            marker = "  ";
+        }
+
+        TextColor background;
+        TextColor markerColor;
+        TextColor treeColor;
+        TextColor metadataColor;
+        boolean bold = isTagged && !isCursor;
+
+        if (isCursor && isTagged) {
+            background = Colors.WHITE;
+            markerColor = Colors.ORANGE;
+            treeColor = Colors.ORANGE;
+            metadataColor = Colors.ORANGE;
+        } else if (isCursor) {
+            background = Colors.ORANGE;
+            markerColor = Colors.WHITE;
+            treeColor = Colors.WHITE;
+            metadataColor = Colors.WHITE;
+        } else {
+            background = Colors.DEFAULT;
+            markerColor = isTagged ? Colors.ORANGE : Colors.GRAY_DIM;
+            treeColor = Colors.GRAY;
+            metadataColor = Colors.GRAY;
+        }
 
         if (isCursor) {
-            fillRow(screen, left, width, row, Colors.ORANGE);
+            fillRow(screen, left, width, row, background);
         }
 
         int maxCol = left + width;
         int col = left;
 
-        String marker = isCursor ? "> " : "  ";
-        col = drawRaw(screen, col, row, marker, markerColor, background, maxCol);
+        for (int index = 0; index < marker.length() && col < maxCol; index = index + 1) {
+            screen.setCharacter(col, row,
+                    buildChar(marker.charAt(index), markerColor, background, bold));
+            col = col + 1;
+        }
 
         String prefix = treeRenderer.renderPrefix(entry, segments);
-        col = drawRaw(screen, col, row, prefix, treeColor, background, maxCol);
+        for (int index = 0; index < prefix.length() && col < maxCol; index = index + 1) {
+            screen.setCharacter(col, row,
+                    buildChar(prefix.charAt(index), treeColor, background, bold));
+            col = col + 1;
+        }
 
         String metadata = entry.isPlaceholder() ? "" : buildMetadata(entry.entry(), plan, now);
-        int metadataWidth = metadata.length();
-        int metadataStart = maxCol - metadataWidth;
+        int metadataStart = maxCol - metadata.length();
         if (metadataStart < col) {
             metadataStart = col;
-            metadataWidth = 0;
+            metadata = "";
         }
 
         String name = entry.isPlaceholder()
@@ -277,14 +334,14 @@ public final class Layout {
                 : displayName(entry.entry());
         TextColor nameColor;
         if (isCursor) {
-            nameColor = Colors.WHITE;
+            nameColor = isTagged ? Colors.ORANGE : Colors.WHITE;
         } else if (entry.isPlaceholder()) {
             nameColor = Colors.GRAY;
         } else {
             nameColor = pickForeground(entry.entry());
         }
 
-        int gap = metadataWidth > 0 ? 1 : 0;
+        int gap = metadata.isEmpty() ? 0 : 1;
         int nameArea = metadataStart - col - gap;
         if (nameArea > 0) {
             if (name.length() > nameArea) {
@@ -294,23 +351,34 @@ public final class Layout {
                     name = name.substring(0, Math.min(1, name.length()));
                 }
             }
-            col = drawRaw(screen, col, row, name, nameColor, background, maxCol);
+            for (int index = 0; index < name.length() && col < maxCol; index = index + 1) {
+                screen.setCharacter(col, row,
+                        buildChar(name.charAt(index), nameColor, background, bold));
+                col = col + 1;
+            }
         }
 
         while (col < metadataStart && col < maxCol) {
             screen.setCharacter(col, row,
-                    TextCharacter.fromCharacter(' ', background, background)[0]);
+                    buildChar(' ', background, background, false));
             col = col + 1;
         }
 
-        if (metadataWidth > 0) {
+        if (!metadata.isEmpty()) {
             for (int index = 0; index < metadata.length() && metadataStart + index < maxCol;
                  index = index + 1) {
                 screen.setCharacter(metadataStart + index, row,
-                        TextCharacter.fromCharacter(metadata.charAt(index),
-                                metadataColor, background)[0]);
+                        buildChar(metadata.charAt(index), metadataColor, background, bold));
             }
         }
+    }
+
+    private static TextCharacter buildChar(char character, TextColor foreground,
+                                            TextColor background, boolean bold) {
+        if (bold) {
+            return TextCharacter.fromCharacter(character, foreground, background, SGR.BOLD)[0];
+        }
+        return TextCharacter.fromCharacter(character, foreground, background)[0];
     }
 
     private String buildMetadata(FileEntry entry, MetadataFormatter.DisplayPlan plan,
@@ -375,29 +443,28 @@ public final class Layout {
     }
 
     private void drawShortcuts(Screen screen, int left, int width, int row,
-                                String nextLevelLabel) {
+                                String nextLevelLabel, TagState tagState) {
         int maxCol = left + width;
         int col = left + 2;
         col = drawShortcut(screen, col, row, "^X", " Exit", maxCol);
         if (width >= 40) {
+            col = drawShortcut(screen, col, row, "^T", " Tag", maxCol);
+        }
+        if (width >= 52) {
             col = drawShortcut(screen, col, row, "\u2191\u2193", " Nav", maxCol);
         }
-        if (width >= 50) {
+        if (width >= 64) {
             col = drawShortcut(screen, col, row, "^D", " Del", maxCol);
         }
-        if (width >= 60) {
+        if (width >= 76) {
             col = drawShortcut(screen, col, row, "M-I", " \u203a" + nextLevelLabel, maxCol);
         }
-        if (width >= 72) {
+        if (width >= 88) {
+            col = drawShortcut(screen, col, row, "M-A", " All", maxCol);
             col = drawShortcut(screen, col, row, "M-D", " Purge", maxCol);
-            col = drawShortcut(screen, col, row, "^R", " Rename", maxCol);
-        }
-        if (width >= 86) {
-            col = drawShortcut(screen, col, row, "M-S", " Mkdir", maxCol);
-            col = drawShortcut(screen, col, row, "M-N", " Touch", maxCol);
         }
         if (width >= 100) {
-            drawShortcut(screen, col, row, "M-Y", " Symlink", maxCol);
+            drawShortcut(screen, col, row, "^R", " Rename", maxCol);
         }
     }
 

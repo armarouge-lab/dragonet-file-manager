@@ -23,6 +23,8 @@ import com.googlecode.lanterna.terminal.Terminal;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.function.Consumer;
 
@@ -34,6 +36,7 @@ public final class Tui {
     private final Environment environment;
     private final Logger logger;
     private final TrashStore trashStore;
+    private final TagState tagState = new TagState();
     private Session session;
 
     private TreeModel treeModel;
@@ -43,6 +46,8 @@ public final class Tui {
     private Consumer<String> pendingPromptAction;
     private Modal activeModal;
     private Consumer<Boolean> pendingModalAction;
+    private MenuModal activeMenuModal;
+    private Consumer<Character> pendingMenuAction;
     private String pendingSymlinkName;
 
     public Tui(Config config, Session session, Environment environment, Logger logger) {
@@ -76,8 +81,8 @@ public final class Tui {
 
             while (running) {
                 if (treeModel.version() != lastRenderedVersion) {
-                    layout.draw(screen, treeModel, session.infoLevel(),
-                            statusMessage, activePrompt, activeModal);
+                    layout.draw(screen, treeModel, tagState, session.infoLevel(),
+                            statusMessage, activePrompt, activeModal, activeMenuModal);
                     statusMessage = null;
                     lastRenderedVersion = treeModel.version();
                 }
@@ -95,6 +100,20 @@ public final class Tui {
                     } catch (InterruptedException exception) {
                         Thread.currentThread().interrupt();
                         break;
+                    }
+                    continue;
+                }
+
+                if (activeMenuModal != null) {
+                    MenuModal.Result result = activeMenuModal.handleKey(keyStroke);
+                    if (!result.active()) {
+                        Consumer<Character> action = pendingMenuAction;
+                        activeMenuModal = null;
+                        pendingMenuAction = null;
+                        lastRenderedVersion = -1L;
+                        if (action != null) {
+                            action.accept(result.choice());
+                        }
                     }
                     continue;
                 }
@@ -172,6 +191,14 @@ public final class Tui {
                 startTrash();
                 return true;
             }
+            if (character == 't') {
+                handleTagToggle();
+                return true;
+            }
+            if (character == 'c') {
+                handleClearTags();
+                return true;
+            }
             return true;
         }
         if (keyType == KeyType.Character && keyStroke.isAltDown()) {
@@ -182,10 +209,15 @@ public final class Tui {
                 case 'n' -> startTouch();
                 case 'y' -> startSymlink();
                 case 'd' -> startPermanentDelete();
+                case 'a' -> handleTagAll();
                 default -> {
                     // Ignored.
                 }
             }
+            return true;
+        }
+        if (keyType == KeyType.Character && keyStroke.getCharacter() == ' ') {
+            handleTagToggle();
             return true;
         }
         if (keyType == KeyType.ArrowDown) {
@@ -237,6 +269,82 @@ public final class Tui {
         int next = MetadataFormatter.nextLevel(currentLevel, columns);
         session = session.withInfoLevel(next);
         lastRenderedVersion = -1L;
+    }
+
+    private void handleTagToggle() {
+        VisibleEntry current = treeModel.current();
+        if (current == null || current.entry() == null) {
+            return;
+        }
+        FileEntry entry = current.entry();
+        if (entry.isParent()) {
+            statusMessage = "Cannot tag ..";
+            lastRenderedVersion = -1L;
+            return;
+        }
+        if (tagState.isTagged(entry.path())) {
+            activeMenuModal = new MenuModal(
+                    "Tag: " + entry.name(),
+                    "u:untag  i:invert all  c:clear all");
+            pendingMenuAction = (choice) -> {
+                switch (choice) {
+                    case 'u' -> {
+                        tagState.untag(entry.path());
+                        statusMessage = "Untagged: " + entry.name();
+                    }
+                    case 'i' -> {
+                        tagState.invertAll(getCurrentLevelEntries());
+                        statusMessage = "Inverted tags at current level";
+                    }
+                    case 'c' -> {
+                        tagState.clear();
+                        statusMessage = "Cleared all tags";
+                    }
+                    default -> statusMessage = "Cancelled";
+                }
+                lastRenderedVersion = -1L;
+            };
+            lastRenderedVersion = -1L;
+            return;
+        }
+        tagState.toggle(entry.path(), entry.sizeBytes());
+        statusMessage = "Tagged: " + entry.name();
+        treeModel.moveDown();
+        lastRenderedVersion = -1L;
+    }
+
+    private void handleTagAll() {
+        List<FileEntry> currentEntries = getCurrentLevelEntries();
+        tagState.tagAll(currentEntries);
+        statusMessage = "Tagged " + currentEntries.size() + " entries";
+        lastRenderedVersion = -1L;
+    }
+
+    private void handleClearTags() {
+        if (tagState.count() == 0) {
+            return;
+        }
+        activeModal = new Modal("Clear " + tagState.count() + " tagged items?");
+        pendingModalAction = (confirmed) -> {
+            if (confirmed) {
+                tagState.clear();
+                statusMessage = "Cleared all tags";
+            } else {
+                statusMessage = "Cancelled";
+            }
+            lastRenderedVersion = -1L;
+        };
+        lastRenderedVersion = -1L;
+    }
+
+    private List<FileEntry> getCurrentLevelEntries() {
+        List<FileEntry> result = new ArrayList<>();
+        for (FileEntry entry : treeModel.baseEntries()) {
+            if (!entry.isParent()) {
+                result.add(entry);
+            }
+        }
+        return result;
     }
 
     private void startMkdir() {
@@ -386,6 +494,7 @@ public final class Tui {
             OperationResult result = trashStore.moveToTrash(target.path());
             statusMessage = result.message();
             if (result.success()) {
+                tagState.untag(target.path());
                 reloadPreservingCursor();
             }
             lastRenderedVersion = -1L;
@@ -417,6 +526,7 @@ public final class Tui {
             OperationResult result = operation.execute();
             statusMessage = result.message();
             if (result.success()) {
+                tagState.untag(target.path());
                 reloadPreservingCursor();
             }
             lastRenderedVersion = -1L;
@@ -424,15 +534,6 @@ public final class Tui {
         lastRenderedVersion = -1L;
     }
 
-    /**
-     * Reloads the current directory after a destructive operation
-     * (delete, trash) and keeps the cursor at the closest valid index.
-     *
-     * <p>If the deleted item was in the middle, the entry that took its
-     * place (the next one) is now under the cursor. If it was the last,
-     * the cursor clamps to the previous entry. If the directory is now
-     * empty, the cursor sits on {@code ..}.
-     */
     private void reloadPreservingCursor() {
         Path currentDirectory = treeModel.directory();
         int savedCursor = treeModel.cursorIndex();
@@ -449,12 +550,6 @@ public final class Tui {
         }
     }
 
-    /**
-     * Reloads the current directory after a creation or rename and
-     * puts the cursor on the entry with the given name.
-     *
-     * @param name the basename of the newly created or renamed entry
-     */
     private void reloadSelectingName(String name) {
         Path currentDirectory = treeModel.directory();
         try {
