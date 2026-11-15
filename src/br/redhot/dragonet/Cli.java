@@ -4,6 +4,10 @@ import br.redhot.dragonet.config.Config;
 import br.redhot.dragonet.config.ConfigException;
 import br.redhot.dragonet.config.ConfigReader;
 import br.redhot.dragonet.config.Session;
+import br.redhot.dragonet.engine.CreateDirectoryOperation;
+import br.redhot.dragonet.engine.CreateFileOperation;
+import br.redhot.dragonet.engine.Operation;
+import br.redhot.dragonet.engine.OperationResult;
 import br.redhot.dragonet.env.Environment;
 import br.redhot.dragonet.tui.Tui;
 
@@ -14,28 +18,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
-/**
- * Argument parser and dispatcher for the {@code dragon} CLI.
- *
- * <p>V0.1.0b supports {@code --version}, {@code --help}, {@code --debug}
- * and {@code --config <path>}, plus an optional path argument that
- * selects the initial directory. Subcommands ({@code --list},
- * {@code --cp}, {@code --rm}, ...) arrive in later commits.
- *
- * <p>{@link #run(String[])} is the testable entry point: it returns an
- * {@link ExitCode} and never calls {@link System#exit}. {@link Main}
- * is the only class that converts the returned code into a process
- * exit.
- */
 public final class Cli {
 
-    /** CLI command name, as typed by the user. */
     public static final String PROGRAM_NAME = "dragon";
-
-    /** Application name, as printed by {@code --version}. */
     public static final String APPLICATION_NAME = "dragonet";
-
-    /** Application version, per the spec test for V0.1.0a. */
     public static final String APPLICATION_VERSION = "0.1.0a";
 
     private final List<String> arguments;
@@ -48,12 +34,6 @@ public final class Cli {
         this.explicitConfigFile = explicitConfigFile;
     }
 
-    /**
-     * Parses arguments and runs the matching command.
-     *
-     * @param rawArguments arguments as received by {@code main}
-     * @return the process exit code
-     */
     public static ExitCode run(String[] rawArguments) {
         Objects.requireNonNull(rawArguments, "rawArguments");
 
@@ -87,25 +67,69 @@ public final class Cli {
         }
 
         String first = arguments.get(0);
+        List<String> rest = arguments.subList(1, arguments.size());
+
         switch (first) {
             case "--version":
                 return printVersion();
             case "--help":
             case "-h":
                 return printHelp();
+            case "--mkdir":
+                return runHeadlessCreate("--mkdir", rest);
+            case "--touch":
+                return runHeadlessCreate("--touch", rest);
             default:
-                if (first.startsWith("-")) {
-                    logger.fail("unknown option: " + first);
-                    logger.fail("run '" + PROGRAM_NAME + " --help' for usage");
-                    return ExitCode.EX_USAGE;
-                }
-                Path path = Path.of(first);
-                if (!Files.isDirectory(path)) {
-                    logger.fail("not a directory: " + path);
-                    return ExitCode.EX_PRECOND;
-                }
-                return openTui(path);
+                break;
         }
+
+        if (first.startsWith("-")) {
+            logger.fail("unknown option: " + first);
+            logger.fail("run '" + PROGRAM_NAME + " --help' for usage");
+            return ExitCode.EX_USAGE;
+        }
+        Path path = Path.of(first);
+        if (!Files.isDirectory(path)) {
+            logger.fail("not a directory: " + path);
+            return ExitCode.EX_PRECOND;
+        }
+        return openTui(path);
+    }
+
+    private ExitCode runHeadlessCreate(String flag, List<String> paths) {
+        if (paths.isEmpty()) {
+            logger.fail(flag + " requires at least one path");
+            return ExitCode.EX_USAGE;
+        }
+        Environment environment;
+        try {
+            environment = Environment.detect();
+        } catch (IllegalStateException exception) {
+            logger.fail("environment error: " + exception.getMessage());
+            return ExitCode.EX_OP_FAILED;
+        }
+        Path homeDirectory = environment.homeDirectory();
+        int failureCount = 0;
+        for (String rawPath : paths) {
+            Path target = Path.of(rawPath);
+            Operation operation = flag.equals("--mkdir")
+                    ? new CreateDirectoryOperation(target, homeDirectory)
+                    : new CreateFileOperation(target, homeDirectory);
+            OperationResult result = operation.execute();
+            if (result.success()) {
+                logger.ok(result.message());
+            } else {
+                logger.fail(result.message());
+                failureCount = failureCount + 1;
+            }
+        }
+        if (failureCount == 0) {
+            return ExitCode.EX_OK;
+        }
+        if (failureCount == paths.size()) {
+            return ExitCode.EX_OP_FAILED;
+        }
+        return ExitCode.EX_PARTIAL;
     }
 
     private ExitCode openTui(Path initialDirectory) {
@@ -147,6 +171,8 @@ public final class Cli {
         System.out.println("  --help, -h          print this help and exit");
         System.out.println("  --debug             enable debug logging to stderr");
         System.out.println("  --config <path>     use the given config file (overrides ~/.config)");
+        System.out.println("  --mkdir <path>...   create directories (headless)");
+        System.out.println("  --touch <path>...   create empty files (headless)");
         System.out.println();
         System.out.println("Run " + PROGRAM_NAME
                 + " with no arguments to open the TUI in the current directory.");

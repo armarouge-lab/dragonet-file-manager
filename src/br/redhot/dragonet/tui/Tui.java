@@ -4,6 +4,12 @@ import br.redhot.dragonet.ExitCode;
 import br.redhot.dragonet.Logger;
 import br.redhot.dragonet.config.Config;
 import br.redhot.dragonet.config.Session;
+import br.redhot.dragonet.engine.CreateDirectoryOperation;
+import br.redhot.dragonet.engine.CreateFileOperation;
+import br.redhot.dragonet.engine.CreateSymlinkOperation;
+import br.redhot.dragonet.engine.Operation;
+import br.redhot.dragonet.engine.OperationResult;
+import br.redhot.dragonet.engine.RenameOperation;
 import br.redhot.dragonet.env.Environment;
 
 import com.googlecode.lanterna.input.KeyStroke;
@@ -16,6 +22,7 @@ import com.googlecode.lanterna.terminal.Terminal;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Objects;
+import java.util.function.Consumer;
 
 public final class Tui {
 
@@ -25,6 +32,15 @@ public final class Tui {
     private final Environment environment;
     private final Logger logger;
     private Session session;
+
+    private TreeModel treeModel;
+    private long lastRenderedVersion = -1L;
+    private String statusMessage;
+    private Prompt activePrompt;
+    private Consumer<String> pendingPromptAction;
+    private Modal activeModal;
+    private Consumer<Boolean> pendingModalAction;
+    private String pendingSymlinkName;
 
     public Tui(Config config, Session session, Environment environment, Logger logger) {
         this.config = Objects.requireNonNull(config, "config");
@@ -36,7 +52,6 @@ public final class Tui {
     public ExitCode run(Path initialDirectory) {
         Path startDirectory = initialDirectory.toAbsolutePath().normalize();
 
-        TreeModel treeModel;
         try {
             FileList baseList = FileList.load(startDirectory, config);
             treeModel = new TreeModel(baseList, config);
@@ -50,21 +65,17 @@ public final class Tui {
              Screen screen = new TerminalScreen(terminal)) {
 
             screen.startScreen();
-            screen.setCursorPosition(null);
 
             TreeRenderer treeRenderer = new TreeRenderer(config, environment.supportsUtf8());
             Layout layout = new Layout(config, environment, treeRenderer);
-
-            long lastRenderedVersion = -1L;
-            String statusMessage = null;
             boolean running = true;
 
             while (running) {
-                long currentVersion = treeModel.version();
-                if (currentVersion != lastRenderedVersion) {
-                    layout.draw(screen, treeModel, session.infoLevel(), statusMessage);
+                if (treeModel.version() != lastRenderedVersion) {
+                    layout.draw(screen, treeModel, session.infoLevel(),
+                            statusMessage, activePrompt, activeModal);
                     statusMessage = null;
-                    lastRenderedVersion = currentVersion;
+                    lastRenderedVersion = treeModel.version();
                 }
 
                 KeyStroke keyStroke;
@@ -84,82 +95,49 @@ public final class Tui {
                     continue;
                 }
 
-                KeyType keyType = keyStroke.getKeyType();
-                if (keyType == KeyType.EOF) {
-                    running = false;
-                    continue;
-                }
-                if (keyType == KeyType.Character && keyStroke.isCtrlDown()) {
-                    if (Character.toLowerCase(keyStroke.getCharacter()) == 'x') {
-                        running = false;
-                    }
-                    continue;
-                }
-                if (keyType == KeyType.Character && keyStroke.isAltDown()) {
-                    char character = Character.toLowerCase(keyStroke.getCharacter());
-                    if (character == 'i') {
-                        int columns = screen.getTerminalSize().getColumns();
-                        if (columns < 40) {
-                            statusMessage = "terminal too narrow for metadata";
-                            lastRenderedVersion = -1L;
-                        } else {
-                            int currentLevel = MetadataFormatter.effectiveLevel(
-                                    session.infoLevel(), columns);
-                            int next = MetadataFormatter.nextLevel(currentLevel, columns);
-                            session = session.withInfoLevel(next);
-                            lastRenderedVersion = -1L;
+                if (activeModal != null) {
+                    Modal.Result result = activeModal.handleKey(keyStroke);
+                    if (!result.active()) {
+                        Modal closing = activeModal;
+                        Consumer<Boolean> action = pendingModalAction;
+                        activeModal = null;
+                        pendingModalAction = null;
+                        lastRenderedVersion = -1L;
+                        if (action != null) {
+                            action.accept(result.confirmed());
                         }
+                        Objects.requireNonNull(closing, "closing");
                     }
                     continue;
                 }
-                if (keyType == KeyType.ArrowDown) {
-                    treeModel.moveDown();
-                    continue;
-                }
-                if (keyType == KeyType.ArrowUp) {
-                    treeModel.moveUp();
-                    continue;
-                }
-                if (keyType == KeyType.ArrowRight) {
-                    treeModel.expandCurrent();
-                    continue;
-                }
-                if (keyType == KeyType.ArrowLeft) {
-                    NavigateResult result = handleArrowLeft(treeModel);
-                    if (result.treeModel != treeModel) {
-                        treeModel = result.treeModel;
+
+                if (activePrompt != null) {
+                    Prompt.Result result = activePrompt.handleKey(keyStroke);
+                    Prompt.Result.Status status = result.status();
+                    if (status == Prompt.Result.Status.CLOSE_APP) {
+                        running = false;
+                    } else if (status == Prompt.Result.Status.CANCELLED) {
+                        activePrompt = null;
+                        pendingPromptAction = null;
+                        pendingSymlinkName = null;
                         lastRenderedVersion = -1L;
-                    }
-                    if (result.statusMessage != null) {
-                        statusMessage = result.statusMessage;
+                    } else if (status == Prompt.Result.Status.SUBMITTED) {
+                        String text = result.text();
+                        Consumer<String> action = pendingPromptAction;
+                        activePrompt = null;
+                        pendingPromptAction = null;
                         lastRenderedVersion = -1L;
-                    }
-                    continue;
-                }
-                if (keyType == KeyType.Enter) {
-                    NavigateResult result = handleEnter(treeModel);
-                    if (result.treeModel != treeModel) {
-                        treeModel = result.treeModel;
-                        lastRenderedVersion = -1L;
-                    }
-                    if (result.statusMessage != null) {
-                        statusMessage = result.statusMessage;
+                        if (action != null) {
+                            action.accept(text);
+                        }
+                    } else {
+                        // Still editing; force redraw of prompt.
                         lastRenderedVersion = -1L;
                     }
                     continue;
                 }
-                if (keyType == KeyType.Backspace) {
-                    NavigateResult result = navigateToParent(treeModel);
-                    if (result.treeModel != treeModel) {
-                        treeModel = result.treeModel;
-                        lastRenderedVersion = -1L;
-                    }
-                    if (result.statusMessage != null) {
-                        statusMessage = result.statusMessage;
-                        lastRenderedVersion = -1L;
-                    }
-                    continue;
-                }
+
+                running = handleIdleKey(keyStroke, screen);
             }
 
             try {
@@ -175,7 +153,227 @@ public final class Tui {
         }
     }
 
-    private NavigateResult handleArrowLeft(TreeModel treeModel) {
+    private boolean handleIdleKey(KeyStroke keyStroke, Screen screen) {
+        KeyType keyType = keyStroke.getKeyType();
+        if (keyType == KeyType.EOF) {
+            return false;
+        }
+        if (keyType == KeyType.Character && keyStroke.isCtrlDown()) {
+            char character = Character.toLowerCase(keyStroke.getCharacter());
+            if (character == 'x') {
+                return false;
+            }
+            if (character == 'r') {
+                startRename();
+                return true;
+            }
+            return true;
+        }
+        if (keyType == KeyType.Character && keyStroke.isAltDown()) {
+            char character = Character.toLowerCase(keyStroke.getCharacter());
+            switch (character) {
+                case 'i' -> toggleInfoLevel(screen);
+                case 's' -> startMkdir();
+                case 'n' -> startTouch();
+                case 'y' -> startSymlink();
+                default -> {
+                    // Ignored
+                }
+            }
+            return true;
+        }
+        if (keyType == KeyType.ArrowDown) {
+            treeModel.moveDown();
+            return true;
+        }
+        if (keyType == KeyType.ArrowUp) {
+            treeModel.moveUp();
+            return true;
+        }
+        if (keyType == KeyType.ArrowRight) {
+            treeModel.expandCurrent();
+            return true;
+        }
+        if (keyType == KeyType.ArrowLeft) {
+            NavigateResult result = handleArrowLeft();
+            applyNavigateResult(result);
+            return true;
+        }
+        if (keyType == KeyType.Enter) {
+            NavigateResult result = handleEnter();
+            applyNavigateResult(result);
+            return true;
+        }
+        if (keyType == KeyType.Backspace) {
+            NavigateResult result = navigateToParent();
+            applyNavigateResult(result);
+            return true;
+        }
+        return true;
+    }
+
+    private void applyNavigateResult(NavigateResult result) {
+        if (result.treeModel != treeModel) {
+            treeModel = result.treeModel;
+            lastRenderedVersion = -1L;
+        }
+        if (result.statusMessage != null) {
+            statusMessage = result.statusMessage;
+            lastRenderedVersion = -1L;
+        }
+    }
+
+    private void toggleInfoLevel(Screen screen) {
+        int columns = screen.getTerminalSize().getColumns();
+        if (columns < 40) {
+            statusMessage = "terminal too narrow for metadata";
+            lastRenderedVersion = -1L;
+            return;
+        }
+        int currentLevel = MetadataFormatter.effectiveLevel(session.infoLevel(), columns);
+        int next = MetadataFormatter.nextLevel(currentLevel, columns);
+        session = session.withInfoLevel(next);
+        lastRenderedVersion = -1L;
+    }
+
+    private void startMkdir() {
+        Path currentDirectory = treeModel.directory();
+        activePrompt = new Prompt("New directory name: ");
+        pendingPromptAction = (text) -> {
+            if (text.isBlank()) {
+                statusMessage = "Cancelled";
+                lastRenderedVersion = -1L;
+                return;
+            }
+            Operation operation = new CreateDirectoryOperation(
+                    currentDirectory.resolve(text), environment.homeDirectory());
+            OperationResult result = operation.execute();
+            statusMessage = result.message();
+            if (result.success()) {
+                reloadTreeModel();
+            }
+            lastRenderedVersion = -1L;
+        };
+        lastRenderedVersion = -1L;
+    }
+
+    private void startTouch() {
+        Path currentDirectory = treeModel.directory();
+        activePrompt = new Prompt("New file name: ");
+        pendingPromptAction = (text) -> {
+            if (text.isBlank()) {
+                statusMessage = "Cancelled";
+                lastRenderedVersion = -1L;
+                return;
+            }
+            Operation operation = new CreateFileOperation(
+                    currentDirectory.resolve(text), environment.homeDirectory());
+            OperationResult result = operation.execute();
+            statusMessage = result.message();
+            if (result.success()) {
+                reloadTreeModel();
+            }
+            lastRenderedVersion = -1L;
+        };
+        lastRenderedVersion = -1L;
+    }
+
+    private void startSymlink() {
+        Path currentDirectory = treeModel.directory();
+        activePrompt = new Prompt("Symlink name: ");
+        pendingPromptAction = (linkName) -> {
+            if (linkName.isBlank()) {
+                statusMessage = "Cancelled";
+                lastRenderedVersion = -1L;
+                return;
+            }
+            pendingSymlinkName = linkName;
+            activePrompt = new Prompt("Symlink target: ");
+            pendingPromptAction = (targetText) -> {
+                String captured = pendingSymlinkName;
+                pendingSymlinkName = null;
+                if (targetText.isBlank() || captured == null) {
+                    statusMessage = "Cancelled";
+                    lastRenderedVersion = -1L;
+                    return;
+                }
+                Operation operation = new CreateSymlinkOperation(
+                        currentDirectory.resolve(captured),
+                        Path.of(targetText),
+                        environment.homeDirectory());
+                OperationResult result = operation.execute();
+                statusMessage = result.message();
+                if (result.success()) {
+                    reloadTreeModel();
+                }
+                lastRenderedVersion = -1L;
+            };
+            lastRenderedVersion = -1L;
+        };
+        lastRenderedVersion = -1L;
+    }
+
+    private void startRename() {
+        VisibleEntry currentEntry = treeModel.current();
+        if (currentEntry == null || currentEntry.entry() == null) {
+            return;
+        }
+        FileEntry target = currentEntry.entry();
+        if (target.isParent()) {
+            statusMessage = "Cannot rename ..";
+            lastRenderedVersion = -1L;
+            return;
+        }
+        activePrompt = new Prompt("Rename '" + target.name() + "': ", target.name());
+        pendingPromptAction = (newName) -> {
+            if (newName.isBlank() || newName.equals(target.name())) {
+                statusMessage = "No change";
+                lastRenderedVersion = -1L;
+                return;
+            }
+            Operation operation = new RenameOperation(
+                    target.path(), newName, environment.homeDirectory(), false);
+            OperationResult result = operation.execute();
+            if (result.targetExists()) {
+                activeModal = new Modal("'" + newName + "' exists. Overwrite?");
+                pendingModalAction = (confirmed) -> {
+                    if (confirmed) {
+                        Operation overwrite = new RenameOperation(
+                                target.path(), newName,
+                                environment.homeDirectory(), true);
+                        OperationResult overwriteResult = overwrite.execute();
+                        statusMessage = overwriteResult.message();
+                        if (overwriteResult.success()) {
+                            reloadTreeModel();
+                        }
+                    } else {
+                        statusMessage = "Cancelled";
+                    }
+                    lastRenderedVersion = -1L;
+                };
+            } else {
+                statusMessage = result.message();
+                if (result.success()) {
+                    reloadTreeModel();
+                }
+            }
+            lastRenderedVersion = -1L;
+        };
+        lastRenderedVersion = -1L;
+    }
+
+    private void reloadTreeModel() {
+        Path currentDirectory = treeModel.directory();
+        try {
+            FileList baseList = FileList.load(currentDirectory, config);
+            treeModel = new TreeModel(baseList, config);
+            lastRenderedVersion = -1L;
+        } catch (IOException exception) {
+            statusMessage = "Reload failed: " + exception.getMessage();
+        }
+    }
+
+    private NavigateResult handleArrowLeft() {
         VisibleEntry current = treeModel.current();
         if (current == null) {
             return new NavigateResult(treeModel, null);
@@ -189,17 +387,17 @@ public final class Tui {
             }
             return new NavigateResult(treeModel, null);
         }
-        return navigateToParent(treeModel);
+        return navigateToParent();
     }
 
-    private NavigateResult handleEnter(TreeModel treeModel) {
+    private NavigateResult handleEnter() {
         VisibleEntry current = treeModel.current();
         if (current == null || current.entry() == null) {
             return new NavigateResult(treeModel, null);
         }
         FileEntry entry = current.entry();
         if (entry.isParent()) {
-            return navigateToParent(treeModel);
+            return navigateToParent();
         }
         if (entry.isNavigable()) {
             try {
@@ -218,7 +416,7 @@ public final class Tui {
                 "Open not implemented yet: " + entry.name());
     }
 
-    private NavigateResult navigateToParent(TreeModel treeModel) {
+    private NavigateResult navigateToParent() {
         Path currentDirectory = treeModel.directory();
         Path parent = currentDirectory.getParent();
         if (parent == null) {

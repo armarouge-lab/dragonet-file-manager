@@ -4,6 +4,7 @@ import br.redhot.dragonet.config.Config;
 import br.redhot.dragonet.env.Environment;
 import br.redhot.dragonet.env.PathResolver;
 
+import com.googlecode.lanterna.TerminalPosition;
 import com.googlecode.lanterna.TerminalSize;
 import com.googlecode.lanterna.TextCharacter;
 import com.googlecode.lanterna.TextColor;
@@ -14,18 +15,6 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 
-/**
- * The three-part layout: title bar, file list, footer.
- *
- * <p>Content is centered on wide terminals: a maximum content width of
- * {@value #MAX_CONTENT_WIDTH} columns and symmetric horizontal padding
- * keep the list from touching the screen edges. On narrow terminals
- * the full width is used.
- *
- * <p>Chrome is deliberately minimal: a title line, two thin horizontal
- * separators, and a footer with nano-style shortcut hints. Colors come
- * exclusively from {@link Colors}.
- */
 public final class Layout {
 
     private static final int MAX_CONTENT_WIDTH = 100;
@@ -44,7 +33,8 @@ public final class Layout {
     }
 
     public void draw(Screen screen, TreeModel treeModel, int infoLevel,
-                     String statusMessage) throws IOException {
+                     String statusMessage, Prompt activePrompt, Modal activeModal)
+            throws IOException {
         TerminalSize size = screen.getTerminalSize();
         int terminalColumns = size.getColumns();
         int terminalRows = size.getRows();
@@ -66,75 +56,126 @@ public final class Layout {
                 terminalColumns);
         String nextLevelLabel = MetadataFormatter.levelLabel(nextLevel);
 
-        if (terminalRows >= ROWS_FULL_CHROME) {
-            drawFullLayout(screen, leftPadding, contentWidth, terminalRows,
-                    treeModel, statusMessage, segments, plan, nextLevelLabel);
-        } else if (terminalRows >= ROWS_COMPACT_CHROME) {
-            drawCompactLayout(screen, leftPadding, contentWidth, terminalRows,
-                    treeModel, statusMessage, segments, plan, nextLevelLabel);
+        boolean fullChrome = terminalRows >= ROWS_FULL_CHROME;
+        boolean compactChrome = terminalRows >= ROWS_COMPACT_CHROME;
+
+        if (fullChrome) {
+            drawFull(screen, leftPadding, contentWidth, terminalRows, treeModel, statusMessage,
+                    segments, plan, nextLevelLabel, activePrompt, activeModal);
+        } else if (compactChrome) {
+            drawCompact(screen, leftPadding, contentWidth, terminalRows, treeModel, statusMessage,
+                    segments, plan, nextLevelLabel, activePrompt, activeModal);
         } else {
-            drawMinimalLayout(screen, leftPadding, contentWidth, terminalRows,
-                    treeModel, statusMessage, segments, plan, nextLevelLabel);
+            drawMinimal(screen, leftPadding, contentWidth, terminalRows, treeModel, statusMessage,
+                    segments, plan, nextLevelLabel, activePrompt, activeModal);
+        }
+
+        if (activeModal != null) {
+            activeModal.draw(screen);
+        } else if (activePrompt != null) {
+            int inputRow = terminalRows - 2;
+            if (inputRow < 0) {
+                inputRow = 0;
+            }
+            int hintRow = terminalRows - 1;
+            if (hintRow < 0) {
+                hintRow = 0;
+            }
+            activePrompt.draw(screen, leftPadding, contentWidth, inputRow, hintRow);
+            int cursorColumn = activePrompt.cursorColumnIn(leftPadding);
+            int maxColumn = leftPadding + contentWidth - 1;
+            if (cursorColumn > maxColumn) {
+                cursorColumn = maxColumn;
+            }
+            screen.setCursorPosition(new TerminalPosition(cursorColumn, inputRow));
+        } else {
+            screen.setCursorPosition(null);
         }
 
         screen.refresh();
     }
 
-    private void drawFullLayout(Screen screen, int left, int width, int rows,
-                                 TreeModel treeModel, String statusMessage,
-                                 TreeRenderer.Segments segments,
-                                 MetadataFormatter.DisplayPlan plan,
-                                 String nextLevelLabel) {
+    private void drawFull(Screen screen, int left, int width, int rows,
+                           TreeModel treeModel, String statusMessage,
+                           TreeRenderer.Segments segments,
+                           MetadataFormatter.DisplayPlan plan,
+                           String nextLevelLabel,
+                           Prompt activePrompt, Modal activeModal) {
         drawTitle(screen, left, width, 0, treeModel);
         drawSeparator(screen, left, width, 1);
 
         int listTop = 3;
-        int listBottom = rows - 4;
+        int listBottom = rows - (activePrompt != null ? 2 : 4);
         drawList(screen, left, width, listTop, listBottom, treeModel, segments, plan);
 
-        drawSeparator(screen, left, width, rows - 3);
-        if (statusMessage != null) {
-            drawStatusLine(screen, left, width, rows - 2, statusMessage);
-        } else {
-            drawShortcuts(screen, left, width, rows - 2, nextLevelLabel);
+        if (activePrompt == null) {
+            drawSeparator(screen, left, width, rows - 3);
+        }
+        if (activeModal != null) {
+            drawModalHint(screen, left, width, rows - 2);
+        } else if (activePrompt == null) {
+            if (statusMessage != null) {
+                drawStatusLine(screen, left, width, rows - 2, statusMessage);
+            } else {
+                drawShortcuts(screen, left, width, rows - 2, nextLevelLabel);
+            }
         }
     }
 
-    private void drawCompactLayout(Screen screen, int left, int width, int rows,
-                                    TreeModel treeModel, String statusMessage,
-                                    TreeRenderer.Segments segments,
-                                    MetadataFormatter.DisplayPlan plan,
-                                    String nextLevelLabel) {
+    private void drawCompact(Screen screen, int left, int width, int rows,
+                              TreeModel treeModel, String statusMessage,
+                              TreeRenderer.Segments segments,
+                              MetadataFormatter.DisplayPlan plan,
+                              String nextLevelLabel,
+                              Prompt activePrompt, Modal activeModal) {
         drawTitle(screen, left, width, 0, treeModel);
         drawSeparator(screen, left, width, 1);
 
         int listTop = 2;
-        int listBottom = rows - 1;
+        int listBottom = rows - (activePrompt != null ? 2 : 1);
         drawList(screen, left, width, listTop, listBottom, treeModel, segments, plan);
 
-        if (statusMessage != null) {
-            drawStatusLine(screen, left, width, rows - 1, statusMessage);
-        } else {
-            drawShortcuts(screen, left, width, rows - 1, nextLevelLabel);
+        if (activePrompt == null && activeModal == null) {
+            if (statusMessage != null) {
+                drawStatusLine(screen, left, width, rows - 1, statusMessage);
+            } else {
+                drawShortcuts(screen, left, width, rows - 1, nextLevelLabel);
+            }
+        } else if (activeModal != null) {
+            drawModalHint(screen, left, width, rows - 1);
         }
     }
 
-    private void drawMinimalLayout(Screen screen, int left, int width, int rows,
-                                    TreeModel treeModel, String statusMessage,
-                                    TreeRenderer.Segments segments,
-                                    MetadataFormatter.DisplayPlan plan,
-                                    String nextLevelLabel) {
+    private void drawMinimal(Screen screen, int left, int width, int rows,
+                              TreeModel treeModel, String statusMessage,
+                              TreeRenderer.Segments segments,
+                              MetadataFormatter.DisplayPlan plan,
+                              String nextLevelLabel,
+                              Prompt activePrompt, Modal activeModal) {
         drawTitle(screen, left, width, 0, treeModel);
 
         int listTop = 1;
-        int listBottom = rows - 1;
+        int listBottom = rows - (activePrompt != null ? 2 : 1);
         drawList(screen, left, width, listTop, listBottom, treeModel, segments, plan);
 
-        if (statusMessage != null) {
-            drawStatusLine(screen, left, width, rows - 1, statusMessage);
-        } else {
-            drawShortcuts(screen, left, width, rows - 1, nextLevelLabel);
+        if (activePrompt == null && activeModal == null) {
+            if (statusMessage != null) {
+                drawStatusLine(screen, left, width, rows - 1, statusMessage);
+            } else {
+                drawShortcuts(screen, left, width, rows - 1, nextLevelLabel);
+            }
+        } else if (activeModal != null) {
+            drawModalHint(screen, left, width, rows - 1);
         }
+    }
+
+    private void drawModalHint(Screen screen, int left, int width, int row) {
+        int maxCol = left + width;
+        int col = left + 2;
+        col = drawRaw(screen, col, row, "y", Colors.WHITE, Colors.ORANGE, maxCol);
+        col = drawChunk(screen, col, row, " Yes  ", Colors.DEFAULT, maxCol);
+        col = drawRaw(screen, col, row, "n/Esc", Colors.WHITE, Colors.ORANGE, maxCol);
+        drawChunk(screen, col, row, " No", Colors.DEFAULT, maxCol);
     }
 
     private void drawTitle(Screen screen, int left, int width, int row, TreeModel treeModel) {
@@ -284,7 +325,7 @@ public final class Layout {
         if (plan.showMode) {
             String mode = entry.modeString();
             if (mode.isEmpty()) {
-                mode = "\u2500".repeat(MetadataFormatter.MODE_WIDTH);
+                mode = "-".repeat(MetadataFormatter.MODE_WIDTH);
             }
             builder.append(padRight(mode, MetadataFormatter.MODE_WIDTH));
         }
@@ -294,7 +335,7 @@ public final class Layout {
             }
             String owner = entry.ownerName();
             if (owner.isEmpty()) {
-                owner = "\u2500".repeat(MetadataFormatter.OWNER_WIDTH);
+                owner = "-".repeat(MetadataFormatter.OWNER_WIDTH);
             }
             builder.append(padRight(owner, MetadataFormatter.OWNER_WIDTH));
         }
@@ -347,19 +388,15 @@ public final class Layout {
         if (width >= 40) {
             col = drawShortcut(screen, col, row, "\u2191\u2193", " Nav", maxCol);
         }
-        if (width >= 58) {
-            col = drawShortcut(screen, col, row, "M-I",
-                    " \u203a" + nextLevelLabel, maxCol);
+        if (width >= 56) {
+            col = drawShortcut(screen, col, row, "M-S", " Mkdir", maxCol);
         }
-        if (width >= 70) {
-            col = drawShortcut(screen, col, row, "\u2192", " Exp", maxCol);
-            col = drawShortcut(screen, col, row, "\u2190", " Col", maxCol);
+        if (width >= 72) {
+            col = drawShortcut(screen, col, row, "M-N", " Touch", maxCol);
+            col = drawShortcut(screen, col, row, "^R", " Rename", maxCol);
         }
-        if (width >= 84) {
-            col = drawShortcut(screen, col, row, "Enter", " Open", maxCol);
-        }
-        if (width >= 96) {
-            drawShortcut(screen, col, row, "Bksp", " Up", maxCol);
+        if (width >= 88) {
+            col = drawShortcut(screen, col, row, "M-Y", " Symlink", maxCol);
         }
     }
 
