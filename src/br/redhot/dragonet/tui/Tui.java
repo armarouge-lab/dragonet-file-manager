@@ -16,6 +16,8 @@ import br.redhot.dragonet.engine.PermanentDeleteOperation;
 import br.redhot.dragonet.engine.RenameOperation;
 import br.redhot.dragonet.env.Environment;
 import br.redhot.dragonet.trash.TrashStore;
+import br.redhot.dragonet.undo.UndoEntry;
+import br.redhot.dragonet.undo.UndoLog;
 
 import com.googlecode.lanterna.input.KeyStroke;
 import com.googlecode.lanterna.input.KeyType;
@@ -25,13 +27,16 @@ import com.googlecode.lanterna.terminal.DefaultTerminalFactory;
 import com.googlecode.lanterna.terminal.Terminal;
 
 import java.io.IOException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Consumer;
 
@@ -43,6 +48,7 @@ public final class Tui {
     private final Environment environment;
     private final Logger logger;
     private final TrashStore trashStore;
+    private final UndoLog undoLog;
     private final TagState tagState = new TagState();
     private final CutBuffer cutBuffer = new CutBuffer();
     private Session session;
@@ -68,6 +74,7 @@ public final class Tui {
         this.environment = Objects.requireNonNull(environment, "environment");
         this.logger = Objects.requireNonNull(logger, "logger");
         this.trashStore = new TrashStore(environment.trashPath(), environment.homeDirectory());
+        this.undoLog = new UndoLog(environment.statePath("undo.log"), config.undoLimit());
     }
 
     public ExitCode run(Path initialDirectory) {
@@ -255,6 +262,7 @@ public final class Tui {
                 case 'd' -> startPermanentDelete();
                 case 't' -> handleTagMenu();
                 case 'a' -> handleTagAllShortcut();
+                case 'u' -> handleUndo();
                 default -> {
                     // Ignored.
                 }
@@ -341,6 +349,88 @@ public final class Tui {
         int next = MetadataFormatter.nextLevel(currentLevel, columns);
         session = session.withInfoLevel(next);
         lastRenderedVersion = -1L;
+    }
+
+    private void handleUndo() {
+        Optional<UndoEntry> maybeEntry;
+        try {
+            maybeEntry = undoLog.lastUndoable();
+        } catch (IOException exception) {
+            statusMessage = "Undo failed: " + exception.getMessage();
+            lastRenderedVersion = -1L;
+            return;
+        }
+        if (maybeEntry.isEmpty()) {
+            statusMessage = "Nothing to undo";
+            lastRenderedVersion = -1L;
+            return;
+        }
+        UndoEntry entry = maybeEntry.get();
+        OperationResult result = performUndo(entry);
+        statusMessage = result.message();
+        if (result.success()) {
+            try {
+                undoLog.append(UndoEntry.undo(entry.epochSeconds(), Instant.now().getEpochSecond()));
+            } catch (IOException exception) {
+                logger.warn("could not write undo marker: " + exception.getMessage());
+            }
+            reloadPreservingCursor();
+        }
+        lastRenderedVersion = -1L;
+    }
+
+    private OperationResult performUndo(UndoEntry entry) {
+        switch (entry.kind()) {
+            case MOVE, RENAME -> {
+                String sourceString = entry.arguments().get("source");
+                String targetString = entry.arguments().get("target");
+                if (sourceString == null || targetString == null) {
+                    return OperationResult.failure("undo entry is missing source/target");
+                }
+                Path source = Path.of(sourceString);
+                Path target = Path.of(targetString);
+                if (!Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+                    return OperationResult.failure("file no longer exists: " + target);
+                }
+                return new MoveOperation(target, source, environment.homeDirectory(), false).execute();
+            }
+            case TRASH -> {
+                String uuid = entry.arguments().get("uuid");
+                if (uuid == null) {
+                    return OperationResult.failure("undo entry is missing uuid");
+                }
+                return trashStore.restore(uuid);
+            }
+            case MKDIR -> {
+                String pathString = entry.arguments().get("path");
+                if (pathString == null) {
+                    return OperationResult.failure("undo entry is missing path");
+                }
+                Path path = Path.of(pathString);
+                if (!Files.isDirectory(path)) {
+                    return OperationResult.failure("directory no longer exists: " + path);
+                }
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(path)) {
+                    if (stream.iterator().hasNext()) {
+                        return OperationResult.failure("directory not empty: " + path);
+                    }
+                } catch (IOException exception) {
+                    return OperationResult.failure("cannot inspect directory: " + exception.getMessage());
+                }
+                try {
+                    Files.delete(path);
+                    return OperationResult.success("Removed: " + path.getFileName());
+                } catch (IOException exception) {
+                    return OperationResult.failure("delete failed: " + exception.getMessage());
+                }
+            }
+            case UNDO -> {
+                return OperationResult.failure("cannot undo an undo");
+            }
+            default -> {
+                return OperationResult.failure("unknown undo entry kind");
+            }
+        }
     }
 
     private void startCut(CutBuffer.Mode mode) {
@@ -473,11 +563,19 @@ public final class Tui {
     }
 
     private void runPasteOperation(Path source, Path target, boolean overwrite) {
-        OperationResult result = pendingPaste.mode == CutBuffer.Mode.MOVE
+        boolean isMove = pendingPaste.mode == CutBuffer.Mode.MOVE;
+        OperationResult result = isMove
                 ? new MoveOperation(source, target, environment.homeDirectory(), overwrite).execute()
                 : new CopyOperation(source, target, environment.homeDirectory(), overwrite).execute();
         if (result.success()) {
             pendingPaste.successCount = pendingPaste.successCount + 1;
+            if (isMove) {
+                try {
+                    undoLog.append(UndoEntry.move(source, target, Instant.now().getEpochSecond()));
+                } catch (IOException exception) {
+                    logger.warn("could not log move to undo: " + exception.getMessage());
+                }
+            }
         } else {
             pendingPaste.failureCount = pendingPaste.failureCount + 1;
         }
@@ -598,11 +696,16 @@ public final class Tui {
                 lastRenderedVersion = -1L;
                 return;
             }
-            Operation operation = new CreateDirectoryOperation(
-                    currentDirectory.resolve(text), environment.homeDirectory());
+            Path target = currentDirectory.resolve(text);
+            Operation operation = new CreateDirectoryOperation(target, environment.homeDirectory());
             OperationResult result = operation.execute();
             statusMessage = result.message();
             if (result.success()) {
+                try {
+                    undoLog.append(UndoEntry.mkdir(target, Instant.now().getEpochSecond()));
+                } catch (IOException exception) {
+                    logger.warn("could not log mkdir to undo: " + exception.getMessage());
+                }
                 reloadSelectingName(text);
             }
             lastRenderedVersion = -1L;
@@ -684,6 +787,7 @@ public final class Tui {
                 lastRenderedVersion = -1L;
                 return;
             }
+            Path newPath = target.path().resolveSibling(newName);
             Operation operation = new RenameOperation(
                     target.path(), newName, environment.homeDirectory(), false);
             OperationResult result = operation.execute();
@@ -697,6 +801,7 @@ public final class Tui {
                         OperationResult overwriteResult = overwrite.execute();
                         statusMessage = overwriteResult.message();
                         if (overwriteResult.success()) {
+                            logRenameUndo(target.path(), newPath);
                             reloadSelectingName(newName);
                         }
                     } else {
@@ -707,12 +812,21 @@ public final class Tui {
             } else {
                 statusMessage = result.message();
                 if (result.success()) {
+                    logRenameUndo(target.path(), newPath);
                     reloadSelectingName(newName);
                 }
             }
             lastRenderedVersion = -1L;
         };
         lastRenderedVersion = -1L;
+    }
+
+    private void logRenameUndo(Path oldPath, Path newPath) {
+        try {
+            undoLog.append(UndoEntry.rename(oldPath, newPath, Instant.now().getEpochSecond()));
+        } catch (IOException exception) {
+            logger.warn("could not log rename to undo: " + exception.getMessage());
+        }
     }
 
     private void startTrash() {
@@ -737,6 +851,14 @@ public final class Tui {
             statusMessage = result.message();
             if (result.success()) {
                 tagState.untag(target.path());
+                trashStore.findLatestUuidFor(target.path()).ifPresent(uuid -> {
+                    try {
+                        undoLog.append(UndoEntry.trash(target.path(), uuid,
+                                Instant.now().getEpochSecond()));
+                    } catch (IOException exception) {
+                        logger.warn("could not log trash to undo: " + exception.getMessage());
+                    }
+                });
                 reloadPreservingCursor();
             }
             lastRenderedVersion = -1L;

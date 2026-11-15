@@ -463,22 +463,22 @@ public final class Layout {
         if (width >= 40) {
             col = drawShortcut(screen, col, row, "^T", " Tag", maxCol);
         }
-        if (!cutBuffer.isEmpty() && width >= 50) {
+        if (!cutBuffer.isEmpty() && width >= 52) {
             String label = cutBuffer.mode() == CutBuffer.Mode.MOVE ? "move" : "copy";
             col = drawShortcut(screen, col, row, "^U",
                     " Paste (" + label + " " + cutBuffer.count() + ")", maxCol);
         }
-        if (width >= 62) {
-            col = drawShortcut(screen, col, row, "^K", " Cut", maxCol);
+        if (width >= 64) {
+            col = drawShortcut(screen, col, row, "M-U", " Undo", maxCol);
         }
-        if (width >= 74) {
-            col = drawShortcut(screen, col, row, "M-6", " Copy", maxCol);
-        }
-        if (width >= 86) {
+        if (width >= 76) {
             col = drawShortcut(screen, col, row, "^D", " Del", maxCol);
         }
-        if (width >= 98) {
-            drawShortcut(screen, col, row, "^R", " Rename", maxCol);
+        if (width >= 88) {
+            col = drawShortcut(screen, col, row, "^R", " Rename", maxCol);
+        }
+        if (width >= 100) {
+            drawShortcut(screen, col, row, "^K", " Cut", maxCol);
         }
     }
 

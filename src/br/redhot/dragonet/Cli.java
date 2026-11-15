@@ -26,7 +26,7 @@ public final class Cli {
 
     public static final String PROGRAM_NAME = "dragon";
     public static final String APPLICATION_NAME = "dragonet";
-    public static final String APPLICATION_VERSION = "0.3b";
+    public static final String APPLICATION_VERSION = "0.4";
 
     private static final DateTimeFormatter TRASH_DATE_FORMAT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");

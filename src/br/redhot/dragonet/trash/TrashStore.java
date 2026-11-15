@@ -137,6 +137,26 @@ public final class TrashStore {
      * @return the outcome; {@code success} implies the item is back at
      *         {@code originalPath} and no longer in the trash
      */
+    /**
+     * Finds the newest trash item whose original path matches.
+     *
+     * <p>Used immediately after a successful {@link #moveToTrash(Path)}
+     * call to obtain the UUID for the undo journal.
+     *
+     * @param originalPath the original path of the trashed item
+     * @return the UUID, or empty when no matching item exists
+     */
+    public java.util.Optional<String> findLatestUuidFor(Path originalPath) {
+        Objects.requireNonNull(originalPath, "originalPath");
+        java.nio.file.Path absolute = originalPath.toAbsolutePath().normalize();
+        for (TrashedItem item : listItems()) {
+            if (item.originalPath().equals(absolute)) {
+                return java.util.Optional.of(item.uuid());
+            }
+        }
+        return java.util.Optional.empty();
+    }
+
     public OperationResult restore(String uuid) {
         if (uuid == null || uuid.isBlank()) {
             return OperationResult.failure("uuid is required");
