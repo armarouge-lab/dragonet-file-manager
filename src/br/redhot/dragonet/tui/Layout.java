@@ -118,7 +118,7 @@ public final class Layout {
             if (statusMessage != null) {
                 drawStatusLine(screen, left, width, rows - 2, statusMessage);
             } else {
-                drawShortcuts(screen, left, width, rows - 2, nextLevelLabel, tagState);
+                drawShortcuts(screen, left, width, rows - 2, nextLevelLabel);
             }
         }
     }
@@ -140,7 +140,7 @@ public final class Layout {
             if (statusMessage != null) {
                 drawStatusLine(screen, left, width, rows - 1, statusMessage);
             } else {
-                drawShortcuts(screen, left, width, rows - 1, nextLevelLabel, tagState);
+                drawShortcuts(screen, left, width, rows - 1, nextLevelLabel);
             }
         } else if (activeModal != null) {
             drawModalHint(screen, left, width, rows - 1);
@@ -163,7 +163,7 @@ public final class Layout {
             if (statusMessage != null) {
                 drawStatusLine(screen, left, width, rows - 1, statusMessage);
             } else {
-                drawShortcuts(screen, left, width, rows - 1, nextLevelLabel, tagState);
+                drawShortcuts(screen, left, width, rows - 1, nextLevelLabel);
             }
         } else if (activeModal != null) {
             drawModalHint(screen, left, width, rows - 1);
@@ -443,27 +443,27 @@ public final class Layout {
     }
 
     private void drawShortcuts(Screen screen, int left, int width, int row,
-                                String nextLevelLabel, TagState tagState) {
+                                String nextLevelLabel) {
         int maxCol = left + width;
         int col = left + 2;
         col = drawShortcut(screen, col, row, "^X", " Exit", maxCol);
         if (width >= 40) {
             col = drawShortcut(screen, col, row, "^T", " Tag", maxCol);
         }
-        if (width >= 52) {
+        if (width >= 50) {
+            col = drawShortcut(screen, col, row, "M-T", " Tags", maxCol);
+        }
+        if (width >= 60) {
             col = drawShortcut(screen, col, row, "\u2191\u2193", " Nav", maxCol);
         }
-        if (width >= 64) {
+        if (width >= 72) {
             col = drawShortcut(screen, col, row, "^D", " Del", maxCol);
         }
-        if (width >= 76) {
+        if (width >= 84) {
             col = drawShortcut(screen, col, row, "M-I", " \u203a" + nextLevelLabel, maxCol);
         }
-        if (width >= 88) {
-            col = drawShortcut(screen, col, row, "M-A", " All", maxCol);
+        if (width >= 96) {
             col = drawShortcut(screen, col, row, "M-D", " Purge", maxCol);
-        }
-        if (width >= 100) {
             drawShortcut(screen, col, row, "^R", " Rename", maxCol);
         }
     }

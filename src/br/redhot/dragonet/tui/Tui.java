@@ -209,7 +209,8 @@ public final class Tui {
                 case 'n' -> startTouch();
                 case 'y' -> startSymlink();
                 case 'd' -> startPermanentDelete();
-                case 'a' -> handleTagAll();
+                case 't' -> handleTagMenu();
+                case 'a' -> handleTagAllShortcut();
                 default -> {
                     // Ignored.
                 }
@@ -283,40 +284,50 @@ public final class Tui {
             return;
         }
         if (tagState.isTagged(entry.path())) {
-            activeMenuModal = new MenuModal(
-                    "Tag: " + entry.name(),
-                    "u:untag  i:invert all  c:clear all");
-            pendingMenuAction = (choice) -> {
-                switch (choice) {
-                    case 'u' -> {
-                        tagState.untag(entry.path());
-                        statusMessage = "Untagged: " + entry.name();
-                    }
-                    case 'i' -> {
-                        tagState.invertAll(getCurrentLevelEntries());
-                        statusMessage = "Inverted tags at current level";
-                    }
-                    case 'c' -> {
-                        tagState.clear();
-                        statusMessage = "Cleared all tags";
-                    }
-                    default -> statusMessage = "Cancelled";
-                }
-                lastRenderedVersion = -1L;
-            };
-            lastRenderedVersion = -1L;
-            return;
+            tagState.untag(entry.path());
+            statusMessage = "Untagged: " + entry.name();
+        } else {
+            tagState.toggle(entry.path(), entry.sizeBytes());
+            statusMessage = "Tagged: " + entry.name();
         }
-        tagState.toggle(entry.path(), entry.sizeBytes());
-        statusMessage = "Tagged: " + entry.name();
         treeModel.moveDown();
         lastRenderedVersion = -1L;
     }
 
-    private void handleTagAll() {
-        List<FileEntry> currentEntries = getCurrentLevelEntries();
-        tagState.tagAll(currentEntries);
-        statusMessage = "Tagged " + currentEntries.size() + " entries";
+    private void handleTagMenu() {
+        activeMenuModal = new MenuModal(
+                "Tag menu",
+                "a:all  i:invert  u:untag  c:clear");
+        pendingMenuAction = (choice) -> {
+            switch (choice) {
+                case 'a' -> {
+                    List<FileEntry> entries = getCurrentLevelEntries();
+                    tagState.tagAll(entries);
+                    statusMessage = "Tagged " + entries.size() + " entries";
+                }
+                case 'i' -> {
+                    tagState.invertAll(getCurrentLevelEntries());
+                    statusMessage = "Inverted tags at current level";
+                }
+                case 'u' -> {
+                    tagState.untagAll(getCurrentLevelEntries());
+                    statusMessage = "Untagged all at current level";
+                }
+                case 'c' -> {
+                    tagState.clear();
+                    statusMessage = "Cleared all tags";
+                }
+                default -> statusMessage = "Cancelled";
+            }
+            lastRenderedVersion = -1L;
+        };
+        lastRenderedVersion = -1L;
+    }
+
+    private void handleTagAllShortcut() {
+        List<FileEntry> entries = getCurrentLevelEntries();
+        tagState.tagAll(entries);
+        statusMessage = "Tagged " + entries.size() + " entries";
         lastRenderedVersion = -1L;
     }
 

@@ -54,6 +54,16 @@ public final class TagState {
         }
     }
 
+    public void untagAll(List<FileEntry> entries) {
+        Objects.requireNonNull(entries, "entries");
+        for (FileEntry entry : entries) {
+            if (entry.isParent()) {
+                continue;
+            }
+            taggedPaths.remove(canonicalize(entry.path()));
+        }
+    }
+
     public void invertAll(List<FileEntry> entries) {
         Objects.requireNonNull(entries, "entries");
         for (FileEntry entry : entries) {

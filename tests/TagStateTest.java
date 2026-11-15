@@ -61,6 +61,30 @@ class TagStateTest {
     }
 
     @Test
+    void untagAllSkipsParentAndRemovesAllInList() {
+        TagState tagState = new TagState();
+        List<FileEntry> entries = List.of(parent(), entry("a.txt", 10L), entry("b.txt", 20L));
+        tagState.tagAll(entries);
+        assertEquals(2, tagState.count());
+
+        tagState.untagAll(entries);
+        assertEquals(0, tagState.count());
+    }
+
+    @Test
+    void untagAllDoesNotTouchOtherDirectories() {
+        TagState tagState = new TagState();
+        tagState.toggle(Path.of("/fake/a.txt"), 10L);
+        tagState.toggle(Path.of("/other/b.txt"), 20L);
+        assertEquals(2, tagState.count());
+
+        tagState.untagAll(List.of(entry("a.txt", 10L)));
+        assertEquals(1, tagState.count());
+        assertFalse(tagState.isTagged(Path.of("/fake/a.txt")));
+        assertTrue(tagState.isTagged(Path.of("/other/b.txt")));
+    }
+
+    @Test
     void invertAllTogglesEachEntry() {
         TagState tagState = new TagState();
         List<FileEntry> entries = List.of(parent(), entry("a.txt", 10L), entry("b.txt", 20L));
