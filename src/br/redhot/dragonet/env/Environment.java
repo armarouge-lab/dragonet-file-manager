@@ -213,12 +213,16 @@ public final class Environment {
     /**
      * Returns whether the current locale indicates UTF-8 support.
      *
-     * <p>Checks {@code LC_ALL}, {@code LC_CTYPE} and {@code LANG} in
-     * that order. The first non-empty value wins.
+     * <p>Checks {@code LC_ALL}, {@code LC_CTYPE} and {@code LANG}.
+     * Explicit UTF-8 wins. If any variable is explicitly {@code C} or
+     * {@code POSIX}, ASCII is assumed. If no variable is set at all,
+     * UTF-8 is assumed (modern terminals are UTF-8 by default; the
+     * user can force ASCII via {@code tree_style=ascii}).
      *
-     * @return {@code true} if UTF-8 is indicated
+     * @return {@code true} if UTF-8 is assumed or indicated
      */
     public boolean supportsUtf8() {
+        boolean explicitNonUtf8 = false;
         for (String variable : new String[]{"LC_ALL", "LC_CTYPE", "LANG"}) {
             String value = System.getenv(variable);
             if (value == null || value.isEmpty()) {
@@ -228,11 +232,11 @@ public final class Environment {
             if (upper.contains("UTF-8") || upper.contains("UTF8")) {
                 return true;
             }
-            if (!upper.equals("C") && !upper.equals("POSIX")) {
-                return false;
+            if (upper.equals("C") || upper.equals("POSIX")) {
+                explicitNonUtf8 = true;
             }
         }
-        return false;
+        return !explicitNonUtf8;
     }
 
     public String operatingSystem() {

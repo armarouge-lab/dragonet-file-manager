@@ -15,7 +15,8 @@ class TreeRendererTest {
 
     private static final FileEntry SOME_FILE = new FileEntry(
             "a.txt", Path.of("/fake/a.txt"), FileEntry.FileType.FILE, 100L,
-            Instant.EPOCH, false, false, false, null, false, false);
+            Instant.EPOCH, false, false, false, null, false, false,
+            "", "");
 
     @Test
     void fullSegmentsAtOrAbove80Columns() {

@@ -8,6 +8,9 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.PosixFileAttributes;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.nio.file.attribute.UserPrincipal;
 import java.text.Collator;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -15,13 +18,6 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 
-/**
- * The list of entries shown for one directory, plus a cursor.
- *
- * <p>Immutable directory and entries; only the cursor index mutates.
- * Navigation up or down changes the cursor, not the list. Navigating
- * into a directory produces a new {@code FileList} via {@link #load}.
- */
 public final class FileList {
 
     private final Path directory;
@@ -34,20 +30,6 @@ public final class FileList {
         this.cursorIndex = cursorIndex;
     }
 
-    /**
-     * Reads a directory and produces a flat list.
-     *
-     * <p>The synthetic {@code ..} entry is prepended unless the
-     * directory is a filesystem root. Hidden entries are skipped when
-     * {@code config.showHidden()} is false. Entries are sorted with
-     * directories first, then by the configured key.
-     *
-     * @param directory the directory to read
-     * @param config    the configuration driving filtering and sorting
-     * @return a populated {@code FileList} with the cursor on the first
-     *         non-{@code ..} entry, or on {@code ..} if it is the only one
-     * @throws IOException if the directory cannot be read
-     */
     public static FileList load(Path directory, Config config) throws IOException {
         Objects.requireNonNull(directory, "directory");
         Objects.requireNonNull(config, "config");
@@ -60,8 +42,22 @@ public final class FileList {
             entries.add(createParentEntry(parent));
         }
 
+        entries.addAll(loadChildren(absoluteDirectory, config));
+
+        int initialCursor = 0;
+        if (!entries.isEmpty() && entries.get(0).isParent() && entries.size() > 1) {
+            initialCursor = 1;
+        }
+
+        return new FileList(absoluteDirectory, entries, initialCursor);
+    }
+
+    public static List<FileEntry> loadChildren(Path directory, Config config) throws IOException {
+        Objects.requireNonNull(directory, "directory");
+        Objects.requireNonNull(config, "config");
+
         List<FileEntry> children = new ArrayList<>();
-        try (DirectoryStream<Path> stream = Files.newDirectoryStream(absoluteDirectory)) {
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(directory)) {
             for (Path child : stream) {
                 String name = child.getFileName().toString();
                 boolean isHidden = name.startsWith(".");
@@ -74,14 +70,7 @@ public final class FileList {
 
         Collator collator = config.sortLocale() ? Collator.getInstance() : null;
         children.sort(buildComparator(config, collator));
-        entries.addAll(children);
-
-        int initialCursor = 0;
-        if (!entries.isEmpty() && entries.get(0).isParent() && entries.size() > 1) {
-            initialCursor = 1;
-        }
-
-        return new FileList(absoluteDirectory, entries, initialCursor);
+        return children;
     }
 
     public Path directory() {
@@ -127,14 +116,6 @@ public final class FileList {
         }
     }
 
-    /**
-     * Moves the cursor to the entry with the given name.
-     *
-     * <p>No-op if no such entry exists. Used to restore the cursor to
-     * the directory the user just left.
-     *
-     * @param name the basename to look for
-     */
     public void moveToEntryNamed(String name) {
         for (int index = 0; index < entries.size(); index = index + 1) {
             if (entries.get(index).name().equals(name)) {
@@ -146,7 +127,8 @@ public final class FileList {
 
     private static FileEntry createParentEntry(Path parent) {
         return new FileEntry("..", parent, FileEntry.FileType.DIRECTORY,
-                0L, Instant.EPOCH, false, false, false, null, false, false);
+                0L, Instant.EPOCH, false, false, false, null, false, false,
+                "", "");
     }
 
     private static FileEntry createEntry(Path child, boolean isHidden) throws IOException {
@@ -156,6 +138,33 @@ public final class FileList {
         String name = child.getFileName().toString();
         long sizeBytes = attributes.size();
         Instant lastModified = attributes.lastModifiedTime().toInstant();
+        String modeString = "";
+        String ownerName = "";
+
+        try {
+            PosixFileAttributes posixAttributes = Files.readAttributes(
+                    child, PosixFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (posixAttributes != null) {
+                char typeCharacter;
+                if (attributes.isDirectory()) {
+                    typeCharacter = 'd';
+                } else if (attributes.isSymbolicLink()) {
+                    typeCharacter = 'l';
+                } else if (attributes.isRegularFile()) {
+                    typeCharacter = '-';
+                } else {
+                    typeCharacter = '?';
+                }
+                modeString = typeCharacter
+                        + PosixFilePermissions.toString(posixAttributes.permissions());
+                UserPrincipal owner = posixAttributes.owner();
+                if (owner != null) {
+                    ownerName = owner.getName();
+                }
+            }
+        } catch (UnsupportedOperationException | IOException ignored) {
+            // Non-POSIX filesystem or unreadable: leave empty.
+        }
 
         if (attributes.isSymbolicLink()) {
             Path symlinkTarget = null;
@@ -175,22 +184,25 @@ public final class FileList {
             }
             return new FileEntry(name, child, FileEntry.FileType.SYMLINK, sizeBytes,
                     lastModified, isHidden, false, true, symlinkTarget,
-                    isBrokenSymlink, isSymlinkToDirectory);
+                    isBrokenSymlink, isSymlinkToDirectory, modeString, ownerName);
         }
 
         if (attributes.isDirectory()) {
             return new FileEntry(name, child, FileEntry.FileType.DIRECTORY, sizeBytes,
-                    lastModified, isHidden, false, false, null, false, false);
+                    lastModified, isHidden, false, false, null, false, false,
+                    modeString, ownerName);
         }
 
         if (attributes.isRegularFile()) {
             boolean isExecutable = Files.isExecutable(child);
             return new FileEntry(name, child, FileEntry.FileType.FILE, sizeBytes,
-                    lastModified, isHidden, isExecutable, false, null, false, false);
+                    lastModified, isHidden, isExecutable, false, null, false, false,
+                    modeString, ownerName);
         }
 
         return new FileEntry(name, child, FileEntry.FileType.OTHER, sizeBytes,
-                lastModified, isHidden, false, false, null, false, false);
+                lastModified, isHidden, false, false, null, false, false,
+                modeString, ownerName);
     }
 
     private static Comparator<FileEntry> buildComparator(Config config, Collator collator) {

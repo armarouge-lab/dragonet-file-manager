@@ -10,6 +10,7 @@ import com.googlecode.lanterna.TextColor;
 import com.googlecode.lanterna.screen.Screen;
 
 import java.io.IOException;
+import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 
@@ -22,12 +23,11 @@ import java.util.Objects;
  * the full width is used.
  *
  * <p>Chrome is deliberately minimal: a title line, two thin horizontal
- * separators, and a footer with nano-style shortcut hints. No outer
- * frame. Colors come exclusively from {@link Colors}.
+ * separators, and a footer with nano-style shortcut hints. Colors come
+ * exclusively from {@link Colors}.
  */
 public final class Layout {
 
-    private static final int SIZE_COLUMN_WIDTH = 7;
     private static final int MAX_CONTENT_WIDTH = 100;
     private static final int MIN_HORIZONTAL_PADDING = 2;
     private static final int ROWS_FULL_CHROME = 10;
@@ -43,7 +43,8 @@ public final class Layout {
         this.treeRenderer = Objects.requireNonNull(treeRenderer, "treeRenderer");
     }
 
-    public void draw(Screen screen, TreeModel treeModel, String statusMessage) throws IOException {
+    public void draw(Screen screen, TreeModel treeModel, int infoLevel,
+                     String statusMessage) throws IOException {
         TerminalSize size = screen.getTerminalSize();
         int terminalColumns = size.getColumns();
         int terminalRows = size.getRows();
@@ -57,65 +58,82 @@ public final class Layout {
         }
         int leftPadding = (terminalColumns - contentWidth) / 2;
 
+        TreeRenderer.Segments segments = treeRenderer.chooseSegments(terminalColumns);
+        MetadataFormatter.DisplayPlan plan =
+                MetadataFormatter.planFor(infoLevel, terminalColumns);
+        int nextLevel = MetadataFormatter.nextLevel(
+                MetadataFormatter.effectiveLevel(infoLevel, terminalColumns),
+                terminalColumns);
+        String nextLevelLabel = MetadataFormatter.levelLabel(nextLevel);
+
         if (terminalRows >= ROWS_FULL_CHROME) {
             drawFullLayout(screen, leftPadding, contentWidth, terminalRows,
-                    treeModel, statusMessage);
+                    treeModel, statusMessage, segments, plan, nextLevelLabel);
         } else if (terminalRows >= ROWS_COMPACT_CHROME) {
             drawCompactLayout(screen, leftPadding, contentWidth, terminalRows,
-                    treeModel, statusMessage);
+                    treeModel, statusMessage, segments, plan, nextLevelLabel);
         } else {
             drawMinimalLayout(screen, leftPadding, contentWidth, terminalRows,
-                    treeModel, statusMessage);
+                    treeModel, statusMessage, segments, plan, nextLevelLabel);
         }
 
         screen.refresh();
     }
 
     private void drawFullLayout(Screen screen, int left, int width, int rows,
-                                 TreeModel treeModel, String statusMessage) {
+                                 TreeModel treeModel, String statusMessage,
+                                 TreeRenderer.Segments segments,
+                                 MetadataFormatter.DisplayPlan plan,
+                                 String nextLevelLabel) {
         drawTitle(screen, left, width, 0, treeModel);
         drawSeparator(screen, left, width, 1);
 
         int listTop = 3;
         int listBottom = rows - 4;
-        drawList(screen, left, width, listTop, listBottom, treeModel);
+        drawList(screen, left, width, listTop, listBottom, treeModel, segments, plan);
 
         drawSeparator(screen, left, width, rows - 3);
         if (statusMessage != null) {
             drawStatusLine(screen, left, width, rows - 2, statusMessage);
         } else {
-            drawShortcuts(screen, left, width, rows - 2);
+            drawShortcuts(screen, left, width, rows - 2, nextLevelLabel);
         }
     }
 
     private void drawCompactLayout(Screen screen, int left, int width, int rows,
-                                    TreeModel treeModel, String statusMessage) {
+                                    TreeModel treeModel, String statusMessage,
+                                    TreeRenderer.Segments segments,
+                                    MetadataFormatter.DisplayPlan plan,
+                                    String nextLevelLabel) {
         drawTitle(screen, left, width, 0, treeModel);
         drawSeparator(screen, left, width, 1);
 
         int listTop = 2;
         int listBottom = rows - 1;
-        drawList(screen, left, width, listTop, listBottom, treeModel);
+        drawList(screen, left, width, listTop, listBottom, treeModel, segments, plan);
 
         if (statusMessage != null) {
             drawStatusLine(screen, left, width, rows - 1, statusMessage);
         } else {
-            drawShortcuts(screen, left, width, rows - 1);
+            drawShortcuts(screen, left, width, rows - 1, nextLevelLabel);
         }
     }
 
     private void drawMinimalLayout(Screen screen, int left, int width, int rows,
-                                    TreeModel treeModel, String statusMessage) {
+                                    TreeModel treeModel, String statusMessage,
+                                    TreeRenderer.Segments segments,
+                                    MetadataFormatter.DisplayPlan plan,
+                                    String nextLevelLabel) {
         drawTitle(screen, left, width, 0, treeModel);
 
         int listTop = 1;
         int listBottom = rows - 1;
-        drawList(screen, left, width, listTop, listBottom, treeModel);
+        drawList(screen, left, width, listTop, listBottom, treeModel, segments, plan);
 
         if (statusMessage != null) {
             drawStatusLine(screen, left, width, rows - 1, statusMessage);
         } else {
-            drawShortcuts(screen, left, width, rows - 1);
+            drawShortcuts(screen, left, width, rows - 1, nextLevelLabel);
         }
     }
 
@@ -158,43 +176,45 @@ public final class Layout {
     }
 
     private void drawSeparator(Screen screen, int left, int width, int row) {
-        char separator = '-';
         TextCharacter character = TextCharacter.fromCharacter(
-                separator, Colors.GRAY_DIM, Colors.DEFAULT)[0];
+                '-', Colors.GRAY_DIM, Colors.DEFAULT)[0];
         for (int column = 0; column < width; column = column + 1) {
             screen.setCharacter(left + column, row, character);
         }
     }
 
     private void drawList(Screen screen, int left, int width,
-                           int listTop, int listBottom, TreeModel treeModel) {
+                           int listTop, int listBottom, TreeModel treeModel,
+                           TreeRenderer.Segments segments,
+                           MetadataFormatter.DisplayPlan plan) {
         int listHeight = listBottom - listTop;
         if (listHeight < 1) {
             return;
         }
-        TreeRenderer.Segments segments = treeRenderer.chooseSegments(width);
         List<VisibleEntry> entries = treeModel.visibleEntries();
         int cursorIndex = treeModel.cursorIndex();
         int scrollOffset = Math.max(0, cursorIndex - listHeight + 1);
         if (cursorIndex < scrollOffset) {
             scrollOffset = cursorIndex;
         }
+        Instant now = Instant.now();
         for (int offset = 0; offset < listHeight; offset = offset + 1) {
             int entryIndex = scrollOffset + offset;
             if (entryIndex >= entries.size()) {
                 break;
             }
             drawEntry(screen, left, width, listTop + offset, entries.get(entryIndex),
-                    entryIndex == cursorIndex, segments);
+                    entryIndex == cursorIndex, segments, plan, now);
         }
     }
 
     private void drawEntry(Screen screen, int left, int width, int row, VisibleEntry entry,
-                            boolean isCursor, TreeRenderer.Segments segments) {
+                            boolean isCursor, TreeRenderer.Segments segments,
+                            MetadataFormatter.DisplayPlan plan, Instant now) {
         TextColor background = isCursor ? Colors.ORANGE : Colors.DEFAULT;
         TextColor markerColor = isCursor ? Colors.WHITE : Colors.GRAY_DIM;
         TextColor treeColor = isCursor ? Colors.WHITE : Colors.GRAY;
-        TextColor sizeColor = isCursor ? Colors.WHITE : Colors.GRAY;
+        TextColor metadataColor = isCursor ? Colors.WHITE : Colors.GRAY;
 
         if (isCursor) {
             fillRow(screen, left, width, row, Colors.ORANGE);
@@ -209,6 +229,14 @@ public final class Layout {
         String prefix = treeRenderer.renderPrefix(entry, segments);
         col = drawRaw(screen, col, row, prefix, treeColor, background, maxCol);
 
+        String metadata = entry.isPlaceholder() ? "" : buildMetadata(entry.entry(), plan, now);
+        int metadataWidth = metadata.length();
+        int metadataStart = maxCol - metadataWidth;
+        if (metadataStart < col) {
+            metadataStart = col;
+            metadataWidth = 0;
+        }
+
         String name = entry.isPlaceholder()
                 ? entry.placeholderText()
                 : displayName(entry.entry());
@@ -221,8 +249,8 @@ public final class Layout {
             nameColor = pickForeground(entry.entry());
         }
 
-        int sizeStartColumn = left + width - SIZE_COLUMN_WIDTH;
-        int nameArea = sizeStartColumn - col - 1;
+        int gap = metadataWidth > 0 ? 1 : 0;
+        int nameArea = metadataStart - col - gap;
         if (nameArea > 0) {
             if (name.length() > nameArea) {
                 if (nameArea > 1) {
@@ -234,39 +262,103 @@ public final class Layout {
             col = drawRaw(screen, col, row, name, nameColor, background, maxCol);
         }
 
-        while (col < sizeStartColumn && col < maxCol) {
+        while (col < metadataStart && col < maxCol) {
             screen.setCharacter(col, row,
                     TextCharacter.fromCharacter(' ', background, background)[0]);
             col = col + 1;
         }
 
-        String size = entry.isPlaceholder() ? "" : formatSize(entry.entry());
-        String rightAligned = String.format("%" + SIZE_COLUMN_WIDTH + "s", size);
-        for (int index = 0; index < rightAligned.length() && col < maxCol; index = index + 1) {
-            screen.setCharacter(col, row,
-                    TextCharacter.fromCharacter(rightAligned.charAt(index),
-                            sizeColor, background)[0]);
-            col = col + 1;
+        if (metadataWidth > 0) {
+            for (int index = 0; index < metadata.length() && metadataStart + index < maxCol;
+                 index = index + 1) {
+                screen.setCharacter(metadataStart + index, row,
+                        TextCharacter.fromCharacter(metadata.charAt(index),
+                                metadataColor, background)[0]);
+            }
         }
     }
 
-    private void drawShortcuts(Screen screen, int left, int width, int row) {
+    private String buildMetadata(FileEntry entry, MetadataFormatter.DisplayPlan plan,
+                                  Instant now) {
+        StringBuilder builder = new StringBuilder();
+        if (plan.showMode) {
+            String mode = entry.modeString();
+            if (mode.isEmpty()) {
+                mode = "\u2500".repeat(MetadataFormatter.MODE_WIDTH);
+            }
+            builder.append(padRight(mode, MetadataFormatter.MODE_WIDTH));
+        }
+        if (plan.showOwner) {
+            if (builder.length() > 0) {
+                builder.append(' ');
+            }
+            String owner = entry.ownerName();
+            if (owner.isEmpty()) {
+                owner = "\u2500".repeat(MetadataFormatter.OWNER_WIDTH);
+            }
+            builder.append(padRight(owner, MetadataFormatter.OWNER_WIDTH));
+        }
+        if (plan.showSize) {
+            if (builder.length() > 0) {
+                builder.append(' ');
+            }
+            String size = entry.isDirectory()
+                    ? "dir"
+                    : MetadataFormatter.formatSize(
+                            entry.sizeBytes(), config.humanize(), plan.compactSize);
+            int width = plan.compactSize
+                    ? MetadataFormatter.SIZE_WIDTH_COMPACT
+                    : MetadataFormatter.SIZE_WIDTH_FULL;
+            builder.append(padLeft(size, width));
+        }
+        if (plan.showDate) {
+            if (builder.length() > 0) {
+                builder.append(' ');
+            }
+            String date = MetadataFormatter.formatDate(
+                    entry.lastModified(), now, config.dateRelative(), plan.compactDate);
+            int width = plan.compactDate
+                    ? MetadataFormatter.DATE_WIDTH_COMPACT
+                    : MetadataFormatter.DATE_WIDTH_FULL;
+            builder.append(padRight(date, width));
+        }
+        return builder.toString();
+    }
+
+    private static String padRight(String text, int width) {
+        if (text.length() >= width) {
+            return text.substring(0, width);
+        }
+        return text + " ".repeat(width - text.length());
+    }
+
+    private static String padLeft(String text, int width) {
+        if (text.length() >= width) {
+            return text.substring(0, width);
+        }
+        return " ".repeat(width - text.length()) + text;
+    }
+
+    private void drawShortcuts(Screen screen, int left, int width, int row,
+                                String nextLevelLabel) {
         int maxCol = left + width;
         int col = left + 2;
         col = drawShortcut(screen, col, row, "^X", " Exit", maxCol);
         if (width >= 40) {
             col = drawShortcut(screen, col, row, "\u2191\u2193", " Nav", maxCol);
         }
-        if (width >= 50) {
-            col = drawShortcut(screen, col, row, "\u2192", " Exp", maxCol);
+        if (width >= 58) {
+            col = drawShortcut(screen, col, row, "M-I",
+                    " \u203a" + nextLevelLabel, maxCol);
         }
-        if (width >= 60) {
+        if (width >= 70) {
+            col = drawShortcut(screen, col, row, "\u2192", " Exp", maxCol);
             col = drawShortcut(screen, col, row, "\u2190", " Col", maxCol);
         }
-        if (width >= 72) {
+        if (width >= 84) {
             col = drawShortcut(screen, col, row, "Enter", " Open", maxCol);
         }
-        if (width >= 86) {
+        if (width >= 96) {
             drawShortcut(screen, col, row, "Bksp", " Up", maxCol);
         }
     }
@@ -328,28 +420,6 @@ public final class Layout {
             return entry.name() + " -> " + entry.symlinkTarget();
         }
         return entry.name();
-    }
-
-    private String formatSize(FileEntry entry) {
-        if (entry.isDirectory()) {
-            return "dir";
-        }
-        long bytes = entry.sizeBytes();
-        long divisor = config.humanize() == Config.Humanize.BINARY ? 1024L : 1000L;
-        String[] units = {"B", "K", "M", "G", "T"};
-        if (bytes < divisor) {
-            return bytes + "B";
-        }
-        double value = bytes;
-        int unitIndex = 0;
-        while (value >= divisor && unitIndex < units.length - 1) {
-            value = value / divisor;
-            unitIndex = unitIndex + 1;
-        }
-        if (value < 10.0) {
-            return String.format("%.1f%s", value, units[unitIndex]);
-        }
-        return String.format("%.0f%s", value, units[unitIndex]);
     }
 
     private TextColor pickForeground(FileEntry entry) {

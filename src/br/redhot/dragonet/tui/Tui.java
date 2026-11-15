@@ -17,27 +17,14 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Objects;
 
-/**
- * The TUI loop.
- *
- * <p>Lanterna 3.1.2 exposes only blocking {@code readInput()} and
- * immediate-return {@code pollInput()} on {@link Screen}. The loop
- * uses {@code pollInput()} plus a short {@code Thread.sleep} so that a
- * future directory watcher can piggyback on the same loop without a
- * rewrite. Idle latency is the sleep duration (50 ms here).
- *
- * <p>Navigates on arrow keys, {@code Enter} and {@code Backspace};
- * exits on {@code ^X} or terminal EOF. Everything else is deferred to
- * later commits.
- */
 public final class Tui {
 
     private static final long IDLE_SLEEP_MILLISECONDS = 50L;
 
     private final Config config;
-    private final Session session;
     private final Environment environment;
     private final Logger logger;
+    private Session session;
 
     public Tui(Config config, Session session, Environment environment, Logger logger) {
         this.config = Objects.requireNonNull(config, "config");
@@ -46,20 +33,13 @@ public final class Tui {
         this.logger = Objects.requireNonNull(logger, "logger");
     }
 
-    /**
-     * Opens the TUI and blocks until the user exits.
-     *
-     * @param initialDirectory the directory to open
-     * @return {@link ExitCode#EX_OK} on clean exit,
-     *         {@link ExitCode#EX_PRECOND} if the directory cannot be read,
-     *         {@link ExitCode#EX_OP_FAILED} on terminal failure
-     */
     public ExitCode run(Path initialDirectory) {
         Path startDirectory = initialDirectory.toAbsolutePath().normalize();
 
-        FileList fileList;
+        TreeModel treeModel;
         try {
-            fileList = FileList.load(startDirectory, config);
+            FileList baseList = FileList.load(startDirectory, config);
+            treeModel = new TreeModel(baseList, config);
         } catch (IOException exception) {
             logger.fail("could not read directory: " + startDirectory);
             logger.fail(exception.getMessage());
@@ -72,16 +52,19 @@ public final class Tui {
             screen.startScreen();
             screen.setCursorPosition(null);
 
-            Layout layout = new Layout(config, environment);
+            TreeRenderer treeRenderer = new TreeRenderer(config, environment.supportsUtf8());
+            Layout layout = new Layout(config, environment, treeRenderer);
+
+            long lastRenderedVersion = -1L;
             String statusMessage = null;
             boolean running = true;
-            boolean needsRedraw = true;
 
             while (running) {
-                if (needsRedraw) {
-                    layout.draw(screen, fileList, statusMessage);
+                long currentVersion = treeModel.version();
+                if (currentVersion != lastRenderedVersion) {
+                    layout.draw(screen, treeModel, session.infoLevel(), statusMessage);
                     statusMessage = null;
-                    needsRedraw = false;
+                    lastRenderedVersion = currentVersion;
                 }
 
                 KeyStroke keyStroke;
@@ -91,7 +74,6 @@ public final class Tui {
                     logger.warn("input read failed: " + exception.getMessage());
                     break;
                 }
-
                 if (keyStroke == null) {
                     try {
                         Thread.sleep(IDLE_SLEEP_MILLISECONDS);
@@ -113,32 +95,69 @@ public final class Tui {
                     }
                     continue;
                 }
+                if (keyType == KeyType.Character && keyStroke.isAltDown()) {
+                    char character = Character.toLowerCase(keyStroke.getCharacter());
+                    if (character == 'i') {
+                        int columns = screen.getTerminalSize().getColumns();
+                        if (columns < 40) {
+                            statusMessage = "terminal too narrow for metadata";
+                            lastRenderedVersion = -1L;
+                        } else {
+                            int currentLevel = MetadataFormatter.effectiveLevel(
+                                    session.infoLevel(), columns);
+                            int next = MetadataFormatter.nextLevel(currentLevel, columns);
+                            session = session.withInfoLevel(next);
+                            lastRenderedVersion = -1L;
+                        }
+                    }
+                    continue;
+                }
                 if (keyType == KeyType.ArrowDown) {
-                    fileList.moveDown();
-                    needsRedraw = true;
+                    treeModel.moveDown();
                     continue;
                 }
                 if (keyType == KeyType.ArrowUp) {
-                    fileList.moveUp();
-                    needsRedraw = true;
+                    treeModel.moveUp();
+                    continue;
+                }
+                if (keyType == KeyType.ArrowRight) {
+                    treeModel.expandCurrent();
+                    continue;
+                }
+                if (keyType == KeyType.ArrowLeft) {
+                    NavigateResult result = handleArrowLeft(treeModel);
+                    if (result.treeModel != treeModel) {
+                        treeModel = result.treeModel;
+                        lastRenderedVersion = -1L;
+                    }
+                    if (result.statusMessage != null) {
+                        statusMessage = result.statusMessage;
+                        lastRenderedVersion = -1L;
+                    }
                     continue;
                 }
                 if (keyType == KeyType.Enter) {
-                    EnterResult result = handleEnter(fileList);
-                    fileList = result.fileList();
-                    if (result.statusMessage() != null) {
-                        statusMessage = result.statusMessage();
+                    NavigateResult result = handleEnter(treeModel);
+                    if (result.treeModel != treeModel) {
+                        treeModel = result.treeModel;
+                        lastRenderedVersion = -1L;
                     }
-                    needsRedraw = true;
+                    if (result.statusMessage != null) {
+                        statusMessage = result.statusMessage;
+                        lastRenderedVersion = -1L;
+                    }
                     continue;
                 }
                 if (keyType == KeyType.Backspace) {
-                    EnterResult result = navigateToParent(fileList);
-                    fileList = result.fileList();
-                    if (result.statusMessage() != null) {
-                        statusMessage = result.statusMessage();
+                    NavigateResult result = navigateToParent(treeModel);
+                    if (result.treeModel != treeModel) {
+                        treeModel = result.treeModel;
+                        lastRenderedVersion = -1L;
                     }
-                    needsRedraw = true;
+                    if (result.statusMessage != null) {
+                        statusMessage = result.statusMessage;
+                        lastRenderedVersion = -1L;
+                    }
                     continue;
                 }
             }
@@ -156,48 +175,68 @@ public final class Tui {
         }
     }
 
-    private EnterResult handleEnter(FileList fileList) {
-        FileEntry current = fileList.current();
+    private NavigateResult handleArrowLeft(TreeModel treeModel) {
+        VisibleEntry current = treeModel.current();
         if (current == null) {
-            return new EnterResult(fileList, null);
+            return new NavigateResult(treeModel, null);
         }
-        if (current.isParent()) {
-            return navigateToParent(fileList);
-        }
-        if (current.isNavigable()) {
-            try {
-                return new EnterResult(FileList.load(current.path(), config), null);
-            } catch (IOException exception) {
-                return new EnterResult(fileList,
-                        "Cannot enter " + current.name() + ": " + exception.getMessage());
+        if (current.depth() > 0) {
+            if (current.entry() != null && current.entry().isDirectory()
+                    && treeModel.isExpanded(current.entry().path())) {
+                treeModel.collapseCurrent();
+            } else {
+                treeModel.moveCursorToDepth(current.depth() - 1);
             }
+            return new NavigateResult(treeModel, null);
         }
-        if (current.isBrokenSymlink()) {
-            return new EnterResult(fileList,
-                    "Broken link: " + current.name() + " -> " + current.symlinkTarget());
-        }
-        return new EnterResult(fileList,
-                "Open not implemented yet: " + current.name());
+        return navigateToParent(treeModel);
     }
 
-    private EnterResult navigateToParent(FileList fileList) {
-        Path currentDirectory = fileList.directory();
+    private NavigateResult handleEnter(TreeModel treeModel) {
+        VisibleEntry current = treeModel.current();
+        if (current == null || current.entry() == null) {
+            return new NavigateResult(treeModel, null);
+        }
+        FileEntry entry = current.entry();
+        if (entry.isParent()) {
+            return navigateToParent(treeModel);
+        }
+        if (entry.isNavigable()) {
+            try {
+                FileList baseList = FileList.load(entry.path(), config);
+                return new NavigateResult(new TreeModel(baseList, config), null);
+            } catch (IOException exception) {
+                return new NavigateResult(treeModel,
+                        "Cannot enter " + entry.name() + ": " + exception.getMessage());
+            }
+        }
+        if (entry.isBrokenSymlink()) {
+            return new NavigateResult(treeModel,
+                    "Broken link: " + entry.name() + " -> " + entry.symlinkTarget());
+        }
+        return new NavigateResult(treeModel,
+                "Open not implemented yet: " + entry.name());
+    }
+
+    private NavigateResult navigateToParent(TreeModel treeModel) {
+        Path currentDirectory = treeModel.directory();
         Path parent = currentDirectory.getParent();
         if (parent == null) {
-            return new EnterResult(fileList, null);
+            return new NavigateResult(treeModel, null);
         }
         Path currentName = currentDirectory.getFileName();
         try {
             FileList parentList = FileList.load(parent, config);
+            TreeModel newModel = new TreeModel(parentList, config);
             if (currentName != null) {
-                parentList.moveToEntryNamed(currentName.toString());
+                newModel.moveToEntryNamed(currentName.toString());
             }
-            return new EnterResult(parentList, null);
+            return new NavigateResult(newModel, null);
         } catch (IOException exception) {
-            return new EnterResult(fileList,
+            return new NavigateResult(treeModel,
                     "Cannot go up: " + exception.getMessage());
         }
     }
 
-    private record EnterResult(FileList fileList, String statusMessage) {}
+    private record NavigateResult(TreeModel treeModel, String statusMessage) {}
 }

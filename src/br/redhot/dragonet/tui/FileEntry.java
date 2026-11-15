@@ -9,7 +9,8 @@ import java.util.Objects;
  *
  * <p>Captured once at load time so the renderer does not touch the
  * filesystem. Symlinks carry their target and broken-ness so the
- * renderer can color them without extra I/O.
+ * renderer can color them without extra I/O. POSIX mode and owner are
+ * pre-formatted strings (empty on non-POSIX filesystems).
  */
 public record FileEntry(
         String name,
@@ -22,7 +23,9 @@ public record FileEntry(
         boolean isSymlink,
         Path symlinkTarget,
         boolean isBrokenSymlink,
-        boolean isSymlinkToDirectory
+        boolean isSymlinkToDirectory,
+        String modeString,
+        String ownerName
 ) {
 
     public FileEntry {
@@ -30,6 +33,8 @@ public record FileEntry(
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(lastModified, "lastModified");
+        Objects.requireNonNull(modeString, "modeString");
+        Objects.requireNonNull(ownerName, "ownerName");
     }
 
     public enum FileType {
@@ -40,14 +45,6 @@ public record FileEntry(
         return type == FileType.DIRECTORY;
     }
 
-    /**
-     * Returns whether {@code Enter} should navigate into this entry.
-     *
-     * <p>True for real directories and for symlinks that resolve to a
-     * directory. A broken symlink is never navigable.
-     *
-     * @return {@code true} if the entry can be entered
-     */
     public boolean isNavigable() {
         if (type == FileType.DIRECTORY) {
             return true;
@@ -55,11 +52,6 @@ public record FileEntry(
         return type == FileType.SYMLINK && !isBrokenSymlink && isSymlinkToDirectory;
     }
 
-    /**
-     * Returns whether this is the synthetic {@code ..} entry.
-     *
-     * @return {@code true} for the parent entry
-     */
     public boolean isParent() {
         return name.equals("..") && type == FileType.DIRECTORY;
     }

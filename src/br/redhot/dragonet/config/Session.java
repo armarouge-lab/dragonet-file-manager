@@ -11,18 +11,6 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
 
-/**
- * Per-session mutable state.
- *
- * <p>Holds the fields that change as the user works (sort, hidden,
- * preview, info level) and are persisted to {@code session.conf} on
- * exit. Distinct from {@link Config} because it is written frequently
- * and atomically, while {@link Config} is read once at startup and
- * rarely written.
- *
- * <p>If the file is unreadable or corrupt, {@link #load} returns
- * {@link #defaults()} and the caller may warn. Never fails the app.
- */
 public record Session(
         Config.SortOrder sort,
         boolean sortReverse,
@@ -38,26 +26,14 @@ public record Session(
         }
     }
 
-    /**
-     * Returns the default session values.
-     *
-     * @return a session with the documented defaults
-     */
     public static Session defaults() {
         return new Session(Config.SortOrder.NAME, false, false, true, 0);
     }
 
-    /**
-     * Loads a session file.
-     *
-     * <p>Returns {@link #defaults()} if the file does not exist or
-     * cannot be parsed. The caller is expected to log a warning when
-     * the file exists but is corrupt; this method deliberately does
-     * not log to keep it usable from tests.
-     *
-     * @param sessionFile the file to read
-     * @return the loaded session, or {@link #defaults()} on any failure
-     */
+    public Session withInfoLevel(int newInfoLevel) {
+        return new Session(sort, sortReverse, showHidden, preview, newInfoLevel);
+    }
+
     public static Session load(Path sessionFile) {
         Objects.requireNonNull(sessionFile, "sessionFile");
         if (!Files.isReadable(sessionFile)) {
@@ -84,16 +60,6 @@ public record Session(
         }
     }
 
-    /**
-     * Persists this session atomically.
-     *
-     * <p>Writes to a sibling temp file, fsyncs, then renames over the
-     * destination. A crash between write and rename leaves the previous
-     * file intact.
-     *
-     * @param sessionFile the file to write
-     * @throws IOException if the write or the rename fails
-     */
     public void save(Path sessionFile) throws IOException {
         Objects.requireNonNull(sessionFile, "sessionFile");
         Path parent = sessionFile.getParent();
