@@ -1,0 +1,22 @@
+# Dragonet default theme: redhot.
+# Color values are ANSI 256-color names or #RRGGBB hex codes.
+
+background=#0a0a0a
+foreground=#e0e0e0
+
+directory=blue
+executable=green
+symlink=cyan
+symlink_broken=red
+device=yellow
+
+error_background=red
+error_foreground=white
+
+tag_background=#ff6600
+tag_foreground=#ffffff
+tag_cursor_background=#ffffff
+tag_cursor_foreground=#ff6600
+
+tree_chars=dim
+metadata=dim

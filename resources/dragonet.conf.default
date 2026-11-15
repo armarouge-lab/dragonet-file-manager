@@ -1,0 +1,74 @@
+# Dragonet default configuration.
+# Copy this file to ~/.config/redhot/dragonet/dragonet.conf and edit as needed.
+# Unknown keys are ignored with a warning; invalid values cause a startup error.
+
+# Schema version. Do not change.
+version=1
+
+# Theme preset: redhot, mono, or light.
+theme=redhot
+
+# Show hidden files by default.
+show_hidden=false
+
+# Sort order: name, size, modified, or type.
+sort=name
+
+# Reverse the sort order.
+sort_reverse=false
+
+# Preview pane: on or off.
+preview=on
+
+# Maximum number of bytes read for a text preview.
+preview_max_bytes=1048576
+
+# Ask for confirmation before destructive operations.
+confirm_delete=true
+
+# Move deleted files to the XDG trash.
+trash_enabled=true
+
+# Automatically trim the trash on startup. Off by default (never silent).
+trash_auto_trim=false
+
+# Maximum age of items in the trash before --trash-purge removes them.
+trash_max_age_days=30
+
+# Maximum size of the trash in gigabytes (0 = unlimited).
+trash_max_size_gb=10
+
+# Follow symbolic links during recursive traversal.
+follow_symlinks=false
+
+# Maximum number of entries kept in the navigation history.
+history_limit=500
+
+# Maximum number of entries kept in the undo journal.
+undo_limit=100
+
+# Humanize file sizes as binary (KiB) or decimal (KB).
+humanize=binary
+
+# Show relative dates ("2 hours ago") instead of absolute.
+date_relative=true
+
+# Respect the locale's collation order when sorting by name.
+sort_locale=true
+
+# Watch the current directory for changes.
+watch_directory=true
+
+# Tree character set: auto, utf8, or ascii. auto detects from LANG.
+tree_style=auto
+
+# Metadata detail level: 0 = name+size, 1 = +date, 2 = +mode+owner, 3 = name only.
+info_level=0
+
+# External commands. Empty means "detect via PATH".
+chafa_command=chafa
+file_command=file
+
+# Openers. Empty means "detect from $VISUAL/$EDITOR" (text) or "xdg-open" (media).
+open_text_editor=
+open_media_player=
