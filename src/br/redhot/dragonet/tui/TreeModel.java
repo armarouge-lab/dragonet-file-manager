@@ -31,6 +31,7 @@ public final class TreeModel {
     private final Config config;
     private final FileList baseFileList;
     private final Set<Path> expandedPaths = ConcurrentHashMap.newKeySet();
+    private final Set<Path> autoExpandedPaths = ConcurrentHashMap.newKeySet();
     private final Map<Path, List<FileEntry>> childrenCache = new ConcurrentHashMap<>();
     private final Set<Path> loadingPaths = ConcurrentHashMap.newKeySet();
     private final Set<Path> failedPaths = ConcurrentHashMap.newKeySet();
@@ -59,10 +60,43 @@ public final class TreeModel {
         if (safe.equals(this.searchQuery)) {
             return;
         }
+        if (safe.isEmpty()) {
+            for (Path path : autoExpandedPaths) {
+                expandedPaths.remove(path);
+            }
+            autoExpandedPaths.clear();
+            this.searchQuery = "";
+            this.cachedFiltered = null;
+            clampCursorIndex();
+            version.incrementAndGet();
+            return;
+        }
+        autoExpandCwdLevelDirectories();
         this.searchQuery = safe;
         this.cachedFiltered = null;
         clampCursorIndex();
         version.incrementAndGet();
+    }
+
+    private void autoExpandCwdLevelDirectories() {
+        for (FileEntry entry : baseFileList.entries()) {
+            if (entry.isParent() || !entry.isDirectory()) {
+                continue;
+            }
+            Path path = entry.path();
+            if (expandedPaths.contains(path) || childrenCache.containsKey(path)
+                    || loadingPaths.contains(path)) {
+                continue;
+            }
+            try {
+                List<FileEntry> children = FileList.loadChildren(path, config);
+                childrenCache.put(path, children);
+                expandedPaths.add(path);
+                autoExpandedPaths.add(path);
+            } catch (IOException ignored) {
+                // Unreadable directory; skip silently.
+            }
+        }
     }
 
     private void clampCursorIndex() {

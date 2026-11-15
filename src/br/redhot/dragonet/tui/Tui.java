@@ -50,6 +50,7 @@ public final class Tui {
     private static final int PREVIEW_MIN_ROWS = 10;
 
     private final Config config;
+    private Config effectiveConfig;
     private final Environment environment;
     private final Logger logger;
     private final TrashStore trashStore;
@@ -86,6 +87,7 @@ public final class Tui {
     public Tui(Config config, Session session, Environment environment, Logger logger) {
         this.config = Objects.requireNonNull(config, "config");
         this.session = Objects.requireNonNull(session, "session");
+        this.effectiveConfig = this.config.withShowHidden(this.session.showHidden());
         this.environment = Objects.requireNonNull(environment, "environment");
         this.logger = Objects.requireNonNull(logger, "logger");
         this.trashStore = new TrashStore(environment.trashPath(), environment.homeDirectory());
@@ -105,8 +107,8 @@ public final class Tui {
         Path startDirectory = initialDirectory.toAbsolutePath().normalize();
 
         try {
-            FileList baseList = FileList.load(startDirectory, config);
-            treeModel = new TreeModel(baseList, config);
+            FileList baseList = FileList.load(startDirectory, effectiveConfig);
+            treeModel = new TreeModel(baseList, effectiveConfig);
         } catch (IOException exception) {
             logger.fail("could not read directory: " + startDirectory);
             logger.fail(exception.getMessage());
@@ -362,7 +364,7 @@ public final class Tui {
                 case 'e' -> { startEdit(); return true; }
                 case 'm' -> { startMkdir(); return true; }
                 case 's' -> { startSymlink(); return true; }
-                case 'h' -> { startHidden(); return true; }
+                case 'h' -> { toggleHidden(); return true; }
                 case 'i' -> { toggleInfoLevel(); return true; }
                 case 'b' -> { handleBookmarkMenu(); return true; }
                 case 'z' -> { runShell(); return true; }
@@ -670,8 +672,8 @@ public final class Tui {
             return;
         }
         try {
-            FileList baseList = FileList.load(directory, config);
-            treeModel = new TreeModel(baseList, config);
+            FileList baseList = FileList.load(directory, effectiveConfig);
+            treeModel = new TreeModel(baseList, effectiveConfig);
             previewScroll = 0;
             if (!fromHistory) {
                 recordVisit(directory);
@@ -1207,13 +1209,13 @@ public final class Tui {
         lastRenderedVersion = -1L;
     }
 
-    private void startHidden() {
-        // Hidden toggle: reload the list with show_hidden flipped in session.
-        // Session doesn't carry show_hidden in V0.7; use config.showHidden()
-        // flipped temporarily would require a rebuild. For V0.7 we just
-        // report that the toggle is not yet wired (dívida para V0.8).
-        statusMessage = "Hidden toggle: not yet implemented (V0.8)";
-        lastRenderedVersion = -1L;
+    private void toggleHidden() {
+        session = session.withShowHidden(!session.showHidden());
+        effectiveConfig = config.withShowHidden(session.showHidden());
+        statusMessage = session.showHidden()
+                ? "Hidden files: shown"
+                : "Hidden files: hidden";
+        reloadPreservingCursor();
     }
 
     private void handleClearTags() {
@@ -1459,8 +1461,8 @@ public final class Tui {
         int savedCursor = treeModel.cursorIndex();
         int savedScroll = treeModel.scrollOffset();
         try {
-            FileList baseList = FileList.load(currentDirectory, config);
-            TreeModel newModel = new TreeModel(baseList, config);
+            FileList baseList = FileList.load(currentDirectory, effectiveConfig);
+            TreeModel newModel = new TreeModel(baseList, effectiveConfig);
             newModel.moveToIndex(savedCursor);
             newModel.setScrollOffset(savedScroll);
             treeModel = newModel;
@@ -1473,8 +1475,8 @@ public final class Tui {
     private void reloadSelectingName(String name) {
         Path currentDirectory = treeModel.directory();
         try {
-            FileList baseList = FileList.load(currentDirectory, config);
-            TreeModel newModel = new TreeModel(baseList, config);
+            FileList baseList = FileList.load(currentDirectory, effectiveConfig);
+            TreeModel newModel = new TreeModel(baseList, effectiveConfig);
             newModel.moveToEntryNamed(name);
             treeModel = newModel;
             lastRenderedVersion = -1L;
@@ -1511,8 +1513,8 @@ public final class Tui {
         }
         if (entry.isNavigable()) {
             try {
-                FileList baseList = FileList.load(entry.path(), config);
-                TreeModel newModel = new TreeModel(baseList, config);
+                FileList baseList = FileList.load(entry.path(), effectiveConfig);
+                TreeModel newModel = new TreeModel(baseList, effectiveConfig);
                 recordVisit(entry.path());
                 return new NavigateResult(newModel, null);
             } catch (IOException exception) {
@@ -1536,8 +1538,8 @@ public final class Tui {
         }
         Path currentName = currentDirectory.getFileName();
         try {
-            FileList parentList = FileList.load(parent, config);
-            TreeModel newModel = new TreeModel(parentList, config);
+            FileList parentList = FileList.load(parent, effectiveConfig);
+            TreeModel newModel = new TreeModel(parentList, effectiveConfig);
             if (currentName != null) {
                 newModel.moveToEntryNamed(currentName.toString());
             }

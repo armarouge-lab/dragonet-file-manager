@@ -35,6 +35,31 @@ class TreeModelSearchTest {
     }
 
     @Test
+    void searchAutoExpandsCollapsedDirs(@TempDir Path tempDirectory) throws Exception {
+        Path proj = Files.createDirectory(tempDirectory.resolve("proj"));
+        Files.createFile(proj.resolve("main.c"));
+        Files.createFile(tempDirectory.resolve("readme.txt"));
+
+        TreeModel model = new TreeModel(
+                FileList.load(tempDirectory, Config.defaults()), Config.defaults());
+        assertFalse(model.visibleEntries().stream()
+                .anyMatch(e -> e.entry() != null && e.entry().name().equals("main.c")),
+                "main.c must not be visible before auto-expand");
+
+        model.setSearchQuery("main");
+
+        assertTrue(model.visibleEntries().stream()
+                .anyMatch(e -> e.entry() != null && e.entry().name().equals("main.c")),
+                "main.c must be visible after auto-expand");
+
+        model.setSearchQuery("");
+
+        assertFalse(model.visibleEntries().stream()
+                .anyMatch(e -> e.entry() != null && e.entry().name().equals("main.c")),
+                "main.c must be hidden again after clearing search");
+    }
+
+    @Test
     void emptyQueryShowsAll(@TempDir Path tempDirectory) throws Exception {
         Files.createFile(tempDirectory.resolve("a.txt"));
         Files.createFile(tempDirectory.resolve("b.txt"));

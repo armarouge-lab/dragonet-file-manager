@@ -93,6 +93,25 @@ public record Config(
     }
 
     /**
+     * Returns a copy of this configuration with {@code showHidden}
+     * replaced. Used by the {@code Alt+H} toggle to switch the working
+     * view without mutating the original config.
+     *
+     * @param newShowHidden the desired value
+     * @return a new {@code Config}
+     */
+    public Config withShowHidden(boolean newShowHidden) {
+        return new Config(
+                version, theme, newShowHidden, sort, sortReverse, preview,
+                previewMaxBytes, confirmDelete, trashEnabled, trashAutoTrim,
+                trashMaxAgeDays, trashMaxSizeGigabytes, followSymlinks,
+                historyLimit, undoLimit, humanize, dateRelative, sortLocale,
+                watchDirectory, treeStyle, impMode, infoLevel, chafaCommand, fileCommand,
+                openTextEditor, openMediaPlayer
+        );
+    }
+
+    /**
      * Returns the documented default configuration (§10.3).
      *
      * @return a {@code Config} with every value set to its default
