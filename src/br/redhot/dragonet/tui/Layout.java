@@ -490,30 +490,38 @@ public final class Layout {
         int maxCol = left + width;
         int col = left + 2;
         col = drawShortcut(screen, col, row, "^X", " Exit", maxCol);
-        if (width >= 40) {
+        if (width >= 44) {
             col = drawShortcut(screen, col, row, "^T", " Tag", maxCol);
         }
-        if (width >= 52) {
-            col = drawShortcut(screen, col, row, "^L", " Preview", maxCol);
-        }
-        if (!cutBuffer.isEmpty() && width >= 64) {
-            String label = cutBuffer.mode() == CutBuffer.Mode.MOVE ? "move" : "copy";
-            col = drawShortcut(screen, col, row, "^U",
-                    " Paste (" + label + " " + cutBuffer.count() + ")", maxCol);
-        }
-        if (width >= 76) {
+        if (width >= 54) {
             col = drawShortcut(screen, col, row, "^D", " Del", maxCol);
         }
-        if (width >= 88) {
-            col = drawShortcut(screen, col, row, "^R", " Rename", maxCol);
+        if (width >= 64) {
+            col = drawShortcut(screen, col, row, "^R", " Ren", maxCol);
         }
-        if (width >= 100) {
-            col = drawShortcut(screen, col, row, "^G", " Help", maxCol);
+        if (width >= 74) {
+            col = drawShortcut(screen, col, row, "^O", " Open", maxCol);
         }
-        if (width >= 112) {
+        if (width >= 84) {
             col = drawShortcut(screen, col, row, "^W", " Find", maxCol);
         }
-        if (width >= 124) {
+        if (width >= 94) {
+            col = drawShortcut(screen, col, row, "^L", " Preview", maxCol);
+        }
+        if (width >= 104) {
+            col = drawShortcut(screen, col, row, "M-c", " Copy", maxCol);
+            col = drawShortcut(screen, col, row, "M-x", " Cut", maxCol);
+        }
+        if (!cutBuffer.isEmpty() && width >= 118) {
+            String label = cutBuffer.mode() == CutBuffer.Mode.MOVE ? "move" : "copy";
+            col = drawShortcut(screen, col, row, "M-v",
+                    " Paste (" + label + " " + cutBuffer.count() + ")", maxCol);
+        }
+        if (width >= 130) {
+            col = drawShortcut(screen, col, row, "M-m", " Mkdir", maxCol);
+            col = drawShortcut(screen, col, row, "M-e", " Edit", maxCol);
+        }
+        if (width >= 144) {
             col = drawShortcut(screen, col, row, "^B", " Back", maxCol);
             drawShortcut(screen, col, row, "^F", " Fwd", maxCol);
         }

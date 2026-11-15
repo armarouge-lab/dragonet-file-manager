@@ -31,6 +31,7 @@ public final class Environment {
     private final Path dataDirectory;
     private final Path trashDirectory;
     private final String operatingSystem;
+    private final Path impBinary;
 
     private Environment(Path homeDirectory,
                         Path systemConfigDirectory,
@@ -38,7 +39,8 @@ public final class Environment {
                         Path stateDirectory,
                         Path dataDirectory,
                         Path trashDirectory,
-                        String operatingSystem) {
+                        String operatingSystem,
+                        Path impBinary) {
         this.homeDirectory = homeDirectory;
         this.systemConfigDirectory = systemConfigDirectory;
         this.userConfigDirectory = userConfigDirectory;
@@ -46,6 +48,7 @@ public final class Environment {
         this.dataDirectory = dataDirectory;
         this.trashDirectory = trashDirectory;
         this.operatingSystem = operatingSystem;
+        this.impBinary = impBinary;
     }
 
     /**
@@ -80,9 +83,28 @@ public final class Environment {
         Path dataDirectory = homeDirectory.resolve(".local/share");
         Path trashDirectory = dataDirectory.resolve("Trash");
 
+        Path impBinary = findBinaryOnPath("imp");
         return new Environment(homeDirectory, systemConfigDirectory,
                 userConfigDirectory, stateDirectory, dataDirectory, trashDirectory,
-                operatingSystem);
+                operatingSystem, impBinary);
+    }
+
+    private static Path findBinaryOnPath(String command) {
+        String pathValue = System.getenv("PATH");
+        if (pathValue == null || pathValue.isEmpty()) {
+            return null;
+        }
+        for (String directory : pathValue.split(":")) {
+            if (directory.isEmpty()) {
+                continue;
+            }
+            Path candidate = Path.of(directory).resolve(command);
+            if (Files.isRegularFile(candidate)
+                    && Files.isExecutable(candidate)) {
+                return candidate;
+            }
+        }
+        return null;
     }
 
     /**
@@ -174,6 +196,26 @@ public final class Environment {
 
     public boolean hasFile() {
         return isExecutableOnPath("file");
+    }
+
+    /**
+     * Returns whether the Imp Media Dispatcher is installed and
+     * executable on {@code $PATH}.
+     *
+     * @return {@code true} if {@code imp} is available
+     */
+    public boolean hasImp() {
+        return impBinary != null;
+    }
+
+    /**
+     * Returns the resolved path to the {@code imp} binary, or
+     * {@code null} when not installed.
+     *
+     * @return the absolute binary path
+     */
+    public Path impPath() {
+        return impBinary;
     }
 
     private static boolean isExecutableOnPath(String command) {

@@ -91,7 +91,7 @@ public final class Tui {
         this.trashStore = new TrashStore(environment.trashPath(), environment.homeDirectory());
         this.undoLog = new UndoLog(environment.statePath("undo.log"), config.undoLimit());
         this.previewModel = new PreviewModel(config.previewMaxBytes());
-        this.fileOpener = new FileOpener();
+        this.fileOpener = new FileOpener(environment.hasImp(), config.impMode());
         this.bookmarks = Bookmarks.load(environment.userConfigPath("bookmarks.conf"));
         this.history = History.load(environment.statePath("history"), config.historyLimit());
         this.previewVisible = session.preview();
@@ -117,6 +117,20 @@ public final class Tui {
         try (Terminal terminal = new DefaultTerminalFactory().createTerminal()) {
             this.screen = new TerminalScreen(terminal);
             screen.startScreen();
+            disableSignalChars();
+
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                try {
+                    session.save(environment.statePath("session.conf"));
+                } catch (IOException ignored) {
+                    // best-effort on shutdown
+                }
+                try {
+                    history.save();
+                } catch (IOException ignored) {
+                    // best-effort on shutdown
+                }
+            }));
 
             TreeRenderer treeRenderer = new TreeRenderer(config, environment.supportsUtf8());
             Layout layout = new Layout(config, environment, treeRenderer);
@@ -260,6 +274,7 @@ public final class Tui {
             logger.fail("terminal error: " + exception.getMessage());
             return ExitCode.EX_OP_FAILED;
         } finally {
+            restoreSignalChars();
             this.screen = null;
         }
     }
@@ -307,10 +322,8 @@ public final class Tui {
         if (keyType == KeyType.EOF) {
             return false;
         }
-        if (keyType == KeyType.Escape && treeModel.isFiltering() && activePrompt == null) {
-            treeModel.setSearchQuery("");
-            statusMessage = "Search cleared";
-            lastRenderedVersion = -1L;
+        if (keyType == KeyType.Escape) {
+            handleCancel();
             return true;
         }
         if (keyType == KeyType.Tab) {
@@ -322,75 +335,38 @@ public final class Tui {
         }
         if (keyType == KeyType.Character && keyStroke.isCtrlDown()) {
             char character = Character.toLowerCase(keyStroke.getCharacter());
-            if (character == 'x') {
-                return handleExitRequest();
+            switch (character) {
+                case 'x' -> { return handleExitRequest(); }
+                case 'g' -> { showHelp(); return true; }
+                case 'c' -> { handleCancel(); return true; }
+                case 'w' -> { startSearch(); return true; }
+                case 'l' -> { togglePreview(); return true; }
+                case 'b' -> { navigateBack(); return true; }
+                case 'f' -> { navigateForward(); return true; }
+                case 'd' -> { startTrash(); return true; }
+                case 'p' -> { startPermanentDelete(); return true; }
+                case 'r' -> { startRename(); return true; }
+                case 't' -> { handleTagToggle(); return true; }
+                case 'a' -> { handleTagAllShortcut(); return true; }
+                case 'n' -> { startTouch(); return true; }
+                case 'o' -> { startOpenWith(); return true; }
+                default -> { return true; }
             }
-            if (character == 'l') {
-                togglePreview();
-                return true;
-            }
-            if (character == 'g') {
-                showHelp();
-                return true;
-            }
-            if (character == 'w') {
-                startSearch();
-                return true;
-            }
-            if (character == 'b') {
-                navigateBack();
-                return true;
-            }
-            if (character == 'f') {
-                navigateForward();
-                return true;
-            }
-            if (character == 'r') {
-                startRename();
-                return true;
-            }
-            if (character == 'd') {
-                startTrash();
-                return true;
-            }
-            if (character == 't') {
-                handleTagToggle();
-                return true;
-            }
-            if (character == 'c') {
-                handleClearTags();
-                return true;
-            }
-            if (character == 'k') {
-                startCut(CutBuffer.Mode.MOVE);
-                return true;
-            }
-            if (character == 'u') {
-                startPaste();
-                return true;
-            }
-            return true;
         }
         if (keyType == KeyType.Character && keyStroke.isAltDown()) {
             char character = Character.toLowerCase(keyStroke.getCharacter());
-            if (character == '6') {
-                startCut(CutBuffer.Mode.COPY);
-                return true;
-            }
             switch (character) {
-                case 'i' -> toggleInfoLevel();
-                case 's' -> startMkdir();
-                case 'n' -> startTouch();
-                case 'y' -> startSymlink();
-                case 'd' -> startPermanentDelete();
-                case 't' -> handleTagMenu();
-                case 'a' -> handleTagAllShortcut();
-                case 'u' -> handleUndo();
-                case 'o' -> startOpenWith();
-                case 'b' -> handleBookmarkMenu();
-                case 'z' -> runShell();
-                case '[' -> navigateBack();
-                case ']' -> navigateForward();
+                case 'c' -> { startCut(CutBuffer.Mode.COPY); return true; }
+                case 'v' -> { startPaste(); return true; }
+                case 'x' -> { startCut(CutBuffer.Mode.MOVE); return true; }
+                case 'e' -> { startEdit(); return true; }
+                case 'm' -> { startMkdir(); return true; }
+                case 's' -> { startSymlink(); return true; }
+                case 'h' -> { startHidden(); return true; }
+                case 'i' -> { toggleInfoLevel(); return true; }
+                case 'b' -> { handleBookmarkMenu(); return true; }
+                case 'z' -> { runShell(); return true; }
+                case 'u' -> { handleUndo(); return true; }
                 default -> {
                     // Ignored.
                 }
@@ -488,25 +464,42 @@ public final class Tui {
         lastRenderedVersion = -1L;
     }
 
+    private void startEdit() {
+        VisibleEntry current = treeModel.current();
+        if (current == null || current.entry() == null || current.entry().isParent()) {
+            return;
+        }
+        FileOpener.Resolution resolution = fileOpener.resolveForEdit(current.entry());
+        executeResolution(resolution);
+    }
+
+    private void executeResolution(FileOpener.Resolution resolution) {
+        if (resolution.mode() == FileOpener.Mode.UNAVAILABLE) {
+            statusMessage = resolution.message();
+            lastRenderedVersion = -1L;
+            return;
+        }
+        FileOpener.Result result;
+        if (resolution.mode() == FileOpener.Mode.BLOCK) {
+            result = runWithSuspendedScreen(
+                    () -> fileOpener.runBlocking(resolution, treeModel.directory()));
+        } else {
+            result = fileOpener.runDetached(resolution, treeModel.directory());
+        }
+        statusMessage = result.message();
+        lastRenderedVersion = -1L;
+    }
+
     private void runUserCommand(String userInput) {
-        List<String> argv;
+        FileOpener.Resolution resolution;
         try {
-            argv = fileOpener.isShellCommand(userInput)
-                    ? fileOpener.parseShellCommand(userInput)
-                    : fileOpener.parseUserCommand(userInput);
+            resolution = fileOpener.resolveForCommand(userInput, treeModel.directory());
         } catch (IllegalArgumentException exception) {
             statusMessage = exception.getMessage();
             lastRenderedVersion = -1L;
             return;
         }
-        if (argv.isEmpty()) {
-            statusMessage = "empty command";
-            lastRenderedVersion = -1L;
-            return;
-        }
-        FileOpener.Result result = runWithSuspendedScreen(
-                () -> fileOpener.runBlocking(argv, treeModel.directory()));
-        statusMessage = result.message();
+        executeResolution(resolution);
     }
 
     private void handleEnterOpen(FileEntry entry) {
@@ -516,7 +509,10 @@ public final class Tui {
                 if (confirmed) {
                     FileOpener.Result result = runWithSuspendedScreen(
                             () -> fileOpener.runBlocking(
-                                    fileOpener.resolveExecutable(entry.path()).orElseThrow(),
+                                    new FileOpener.Resolution(
+                                            List.of(entry.path().toString()),
+                                            FileOpener.Mode.BLOCK,
+                                            "Running " + entry.name()),
                                     treeModel.directory()));
                     statusMessage = result.message();
                 } else {
@@ -527,37 +523,8 @@ public final class Tui {
             lastRenderedVersion = -1L;
             return;
         }
-        FileTypeDetector.Kind kind = FileTypeDetector.detect(entry.path());
-        switch (kind) {
-            case TEXT -> {
-                Optional<List<String>> editorArgv = fileOpener.resolveEditor();
-                if (editorArgv.isEmpty()) {
-                    statusMessage = "Set $VISUAL or $EDITOR to open text files";
-                    lastRenderedVersion = -1L;
-                    return;
-                }
-                List<String> argv = new ArrayList<>(editorArgv.get());
-                argv.add(entry.path().toString());
-                FileOpener.Result result = runWithSuspendedScreen(
-                        () -> fileOpener.runBlocking(argv, treeModel.directory()));
-                statusMessage = result.message();
-            }
-            case IMAGE, BINARY -> {
-                Optional<List<String>> xdgArgv = fileOpener.resolveXdgOpen(entry.path());
-                if (xdgArgv.isEmpty()) {
-                    statusMessage = "xdg-open not found. Install: pkg install xdg-utils";
-                    lastRenderedVersion = -1L;
-                    return;
-                }
-                FileOpener.Result result = fileOpener.runDetached(
-                        xdgArgv.get(), treeModel.directory());
-                statusMessage = result.message();
-            }
-            default -> {
-                statusMessage = "Unknown file type";
-            }
-        }
-        lastRenderedVersion = -1L;
+        FileOpener.Resolution resolution = fileOpener.resolve(entry);
+        executeResolution(resolution);
     }
 
     // ---- Bookmarks ----
@@ -728,9 +695,10 @@ public final class Tui {
         if (shell == null || shell.isBlank()) {
             shell = "/bin/sh";
         }
-        List<String> argv = List.of(shell);
+        FileOpener.Resolution resolution = new FileOpener.Resolution(
+                List.of(shell), FileOpener.Mode.BLOCK, "Shell: " + shell);
         FileOpener.Result result = runWithSuspendedScreen(
-                () -> fileOpener.runBlocking(argv, treeModel.directory()));
+                () -> fileOpener.runBlocking(resolution, treeModel.directory()));
         statusMessage = result.message();
         lastRenderedVersion = -1L;
     }
@@ -742,19 +710,21 @@ public final class Tui {
 
     private FileOpener.Result runWithSuspendedScreen(ScreenSuspendedCall call) {
         if (screen == null) {
-            return FileOpener.Result.failed("no active screen");
+            return new FileOpener.Result("no active screen");
         }
         try {
+            restoreSignalChars();
             screen.stopScreen();
         } catch (IOException exception) {
-            return FileOpener.Result.failed("Cannot suspend TUI: " + exception.getMessage());
+            return new FileOpener.Result("Cannot suspend TUI: " + exception.getMessage());
         }
-        FileOpener.Result result = FileOpener.Result.failed("unknown");
+        FileOpener.Result result = new FileOpener.Result("unknown");
         try {
             result = call.run();
         } finally {
             try {
                 screen.startScreen();
+                disableSignalChars();
             } catch (IOException exception) {
                 logger.warn("could not resume screen: " + exception.getMessage());
             }
@@ -793,6 +763,59 @@ public final class Tui {
         }
         session = session.withPreview(previewVisible);
         lastRenderedVersion = -1L;
+    }
+
+    private void disableSignalChars() {
+        boolean ok = sttyOn("/dev/tty", "-isig") || sttyInherited("-isig");
+        if (!ok) {
+            logger.warn("stty -isig failed on both /dev/tty and INHERIT. "
+                    + "Ctrl+C will send SIGINT and close the app. "
+                    + "Workaround: run 'stty -isig' in another terminal while the app is open.");
+        }
+    }
+
+    private void restoreSignalChars() {
+        sttyOn("/dev/tty", "isig");
+        sttyInherited("isig");
+    }
+
+    private boolean sttyOn(String ttyPath, String argument) {
+        java.io.File tty = new java.io.File(ttyPath);
+        if (!tty.exists() || !tty.canRead()) {
+            return false;
+        }
+        try {
+            ProcessBuilder builder = new ProcessBuilder("stty", argument);
+            builder.redirectInput(tty);
+            builder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+            builder.redirectError(ProcessBuilder.Redirect.DISCARD);
+            int exitCode = builder.start().waitFor();
+            return exitCode == 0;
+        } catch (IOException exception) {
+            logger.debug("stty " + argument + " via " + ttyPath + " failed: "
+                    + exception.getMessage());
+            return false;
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    private boolean sttyInherited(String argument) {
+        try {
+            ProcessBuilder builder = new ProcessBuilder("stty", argument);
+            builder.redirectInput(ProcessBuilder.Redirect.INHERIT);
+            builder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+            builder.redirectError(ProcessBuilder.Redirect.DISCARD);
+            return builder.start().waitFor() == 0;
+        } catch (IOException exception) {
+            logger.debug("stty " + argument + " via INHERIT failed: "
+                    + exception.getMessage());
+            return false;
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
     private void showHelp() {
@@ -1156,6 +1179,40 @@ public final class Tui {
         List<FileEntry> entries = getCurrentLevelEntries();
         tagState.tagAll(entries);
         statusMessage = "Tagged " + entries.size() + " entries";
+        lastRenderedVersion = -1L;
+    }
+
+    private void handleCancel() {
+        if (treeModel.isFiltering()) {
+            treeModel.setSearchQuery("");
+            statusMessage = "Search cleared";
+            lastRenderedVersion = -1L;
+            return;
+        }
+        if (tagState.count() > 0) {
+            activeModal = new Modal("Clear " + tagState.count() + " tagged items?");
+            pendingModalAction = (confirmed) -> {
+                if (confirmed) {
+                    tagState.clear();
+                    statusMessage = "Cleared all tags";
+                } else {
+                    statusMessage = "Cancelled";
+                }
+                lastRenderedVersion = -1L;
+            };
+            lastRenderedVersion = -1L;
+            return;
+        }
+        statusMessage = "Nothing to cancel";
+        lastRenderedVersion = -1L;
+    }
+
+    private void startHidden() {
+        // Hidden toggle: reload the list with show_hidden flipped in session.
+        // Session doesn't carry show_hidden in V0.7; use config.showHidden()
+        // flipped temporarily would require a rebuild. For V0.7 we just
+        // report that the toggle is not yet wired (dívida para V0.8).
+        statusMessage = "Hidden toggle: not yet implemented (V0.8)";
         lastRenderedVersion = -1L;
     }
 

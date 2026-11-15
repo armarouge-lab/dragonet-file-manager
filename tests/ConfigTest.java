@@ -36,6 +36,7 @@ class ConfigTest {
         assertTrue(config.sortLocale());
         assertTrue(config.watchDirectory());
         assertEquals(Config.TreeStyle.AUTO, config.treeStyle());
+        assertEquals(Config.ImpMode.AUTO, config.impMode());
         assertEquals(0, config.infoLevel());
         assertEquals("chafa", config.chafaCommand());
         assertEquals("file", config.fileCommand());

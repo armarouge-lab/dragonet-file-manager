@@ -35,6 +35,7 @@ public record Config(
         boolean sortLocale,
         boolean watchDirectory,
         TreeStyle treeStyle,
+        ImpMode impMode,
         int infoLevel,
         String chafaCommand,
         String fileCommand,
@@ -47,6 +48,7 @@ public record Config(
         Objects.requireNonNull(sort, "sort");
         Objects.requireNonNull(humanize, "humanize");
         Objects.requireNonNull(treeStyle, "treeStyle");
+        Objects.requireNonNull(impMode, "impMode");
         Objects.requireNonNull(chafaCommand, "chafaCommand");
         Objects.requireNonNull(fileCommand, "fileCommand");
         Objects.requireNonNull(openTextEditor, "openTextEditor");
@@ -86,6 +88,10 @@ public record Config(
         AUTO, UTF8, ASCII
     }
 
+    public enum ImpMode {
+        AUTO, BLOCK, DETACH
+    }
+
     /**
      * Returns the documented default configuration (§10.3).
      *
@@ -113,6 +119,7 @@ public record Config(
                 true,
                 true,
                 TreeStyle.AUTO,
+                ImpMode.AUTO,
                 0,
                 "chafa",
                 "file",

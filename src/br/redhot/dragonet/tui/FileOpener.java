@@ -1,5 +1,7 @@
 package br.redhot.dragonet.tui;
 
+import br.redhot.dragonet.config.Config;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -12,46 +14,198 @@ import java.util.Optional;
 /**
  * Resolves and runs external programs for file dispatch.
  *
- * <p>Two distinct execution modes:
- * <ul>
- *   <li>{@link #runBlocking}: {@code inheritIO} + {@code waitFor}. The
- *       caller must suspend the TUI before calling (see
- *       {@code Tui.runWithSuspendedScreen}). Interactive commands
- *       ({@code less}, {@code vim}, {@code sh -c ...}) require this.</li>
- *   <li>{@link #runDetached}: {@code start} and forget. Used for
- *       {@code xdg-open} and other fork-and-return launchers.</li>
- * </ul>
+ * <p>Resolution has two stages: {@link #resolve(FileEntry)} decides what
+ * to run and whether it should block the TUI (TTY programs) or detach
+ * (GUI programs). {@link #runBlocking} and {@link #runDetached} execute
+ * the plan. The split lets the resolution logic be unit-tested without
+ * installing Imp or any other handler.
  *
- * <p>All invocations use {@link ProcessBuilder} with explicit argv; no
- * shell is ever invoked except when the caller explicitly requests
- * {@code /bin/sh -c} via {@link #resolveShellCommand}.
+ * <p>Imp (the Redhot Media Dispatcher) takes precedence when present.
+ * In {@code auto} mode, {@code imp <path>} is run blocking for text
+ * files (editor/pager need the terminal) and detached for images and
+ * binaries (GUI viewers do not).
  */
 public final class FileOpener {
 
-    public enum Outcome { OK, NO_HANDLER, FAILED }
+    public enum Mode { BLOCK, DETACH, UNAVAILABLE }
 
-    public record Result(Outcome outcome, String message) {
-        public Result {
-            Objects.requireNonNull(outcome, "outcome");
+    public record Resolution(List<String> argv, Mode mode, String message) {
+        public Resolution {
+            Objects.requireNonNull(argv, "argv");
+            Objects.requireNonNull(mode, "mode");
             Objects.requireNonNull(message, "message");
         }
 
-        public static Result ok(String message) {
-            return new Result(Outcome.OK, message);
+        static Resolution block(List<String> argv, String message) {
+            return new Resolution(argv, Mode.BLOCK, message);
         }
 
-        public static Result noHandler(String hint) {
-            return new Result(Outcome.NO_HANDLER, hint);
+        static Resolution detach(List<String> argv, String message) {
+            return new Resolution(argv, Mode.DETACH, message);
         }
 
-        public static Result failed(String message) {
-            return new Result(Outcome.FAILED, message);
+        static Resolution unavailable(String message) {
+            return new Resolution(List.of(), Mode.UNAVAILABLE, message);
         }
     }
 
-    private static final List<String> NONE = List.of();
+    public record Result(String message) {
+    }
 
-    public Optional<List<String>> resolveEditor() {
+    private final boolean impAvailable;
+    private final Config.ImpMode impMode;
+
+    public FileOpener(boolean impAvailable, Config.ImpMode impMode) {
+        this.impAvailable = impAvailable;
+        this.impMode = Objects.requireNonNull(impMode, "impMode");
+    }
+
+    public boolean impAvailable() {
+        return impAvailable;
+    }
+
+    /**
+     * Decides what to run and how.
+     *
+     * @param entry the file entry to open
+     * @return a resolution with argv, execution mode, and a short message
+     */
+    public Resolution resolve(FileEntry entry) {
+        Objects.requireNonNull(entry, "entry");
+        if (impAvailable) {
+            return resolveImp(entry);
+        }
+        return resolveFallback(entry);
+    }
+
+    /**
+     * Decides what to run for an explicit "edit" request (Alt+E).
+     * Always uses {@code $VISUAL}/{@code $EDITOR}, bypassing Imp.
+     */
+    public Resolution resolveForEdit(FileEntry entry) {
+        Optional<List<String>> editorArgv = resolveEditorArgv();
+        if (editorArgv.isEmpty()) {
+            return Resolution.unavailable("Set $VISUAL or $EDITOR to edit text files");
+        }
+        List<String> argv = new ArrayList<>(editorArgv.get());
+        argv.add(entry.path().toString());
+        return Resolution.block(argv, "Editing with " + argv.get(0));
+    }
+
+    /**
+     * Decides what to run for an "open with" prompt (Alt+W). The
+     * command line is parsed quote-aware; a leading {@code !} forces
+     * shell execution.
+     */
+    public Resolution resolveForCommand(String userInput, Path ignoredWorkingDirectory) {
+        if (isShellCommand(userInput)) {
+            return Resolution.block(parseShellCommand(userInput), "Running shell");
+        }
+        List<String> argv = parseUserCommand(userInput);
+        if (argv.isEmpty()) {
+            return Resolution.unavailable("empty command");
+        }
+        return Resolution.block(argv, "Running " + argv.get(0));
+    }
+
+    /**
+     * Runs a resolution that needs the terminal. The caller is
+     * responsible for suspending the TUI before calling this.
+     */
+    public Result runBlocking(Resolution resolution, Path workingDirectory) {
+        if (resolution.mode() != Mode.BLOCK) {
+            return new Result("Not a blocking resolution");
+        }
+        try {
+            ProcessBuilder builder = new ProcessBuilder(resolution.argv());
+            if (workingDirectory != null) {
+                builder.directory(workingDirectory.toFile());
+            }
+            builder.inheritIO();
+            int exitCode = builder.start().waitFor();
+            if (exitCode == 0) {
+                return new Result(resolution.message());
+            }
+            return new Result(resolution.argv().get(0) + " exited with code " + exitCode);
+        } catch (IOException exception) {
+            return new Result("Cannot run '" + resolution.argv().get(0) + "': "
+                    + exception.getMessage());
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            return new Result("interrupted");
+        }
+    }
+
+    /**
+     * Runs a resolution detached (start-and-forget). Stdout and stderr
+     * are redirected to {@code DISCARD} so a GUI program cannot pollute
+     * the terminal that the TUI is using.
+     */
+    public Result runDetached(Resolution resolution, Path workingDirectory) {
+        if (resolution.mode() != Mode.DETACH) {
+            return new Result("Not a detach resolution");
+        }
+        try {
+            ProcessBuilder builder = new ProcessBuilder(resolution.argv());
+            if (workingDirectory != null) {
+                builder.directory(workingDirectory.toFile());
+            }
+            builder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+            builder.redirectError(ProcessBuilder.Redirect.DISCARD);
+            builder.redirectInput(ProcessBuilder.Redirect.INHERIT);
+            builder.start();
+            return new Result(resolution.message());
+        } catch (IOException exception) {
+            return new Result("Cannot launch '" + resolution.argv().get(0) + "': "
+                    + exception.getMessage());
+        }
+    }
+
+    // ---- Resolution helpers ----
+
+    private Resolution resolveImp(FileEntry entry) {
+        FileTypeDetector.Kind kind = FileTypeDetector.detect(entry.path());
+        boolean needsTerminal = kind == FileTypeDetector.Kind.TEXT;
+        Mode execMode = switch (impMode) {
+            case AUTO -> needsTerminal ? Mode.BLOCK : Mode.DETACH;
+            case BLOCK -> Mode.BLOCK;
+            case DETACH -> Mode.DETACH;
+        };
+        List<String> argv = List.of("imp", entry.path().toString());
+        String message = execMode == Mode.BLOCK
+                ? "Dispatching with imp (blocking)"
+                : "Dispatching with imp";
+        return new Resolution(argv, execMode, message);
+    }
+
+    private Resolution resolveFallback(FileEntry entry) {
+        FileTypeDetector.Kind kind = FileTypeDetector.detect(entry.path());
+        switch (kind) {
+            case TEXT -> {
+                Optional<List<String>> editorArgv = resolveEditorArgv();
+                if (editorArgv.isEmpty()) {
+                    return Resolution.unavailable(
+                            "Set $VISUAL or $EDITOR to open text files");
+                }
+                List<String> argv = new ArrayList<>(editorArgv.get());
+                argv.add(entry.path().toString());
+                return Resolution.block(argv, "Opening with " + argv.get(0));
+            }
+            case IMAGE, BINARY -> {
+                if (!isExecutableOnPath("xdg-open")) {
+                    return Resolution.unavailable(
+                            "xdg-open not found. Install: pkg install xdg-utils");
+                }
+                List<String> argv = List.of("xdg-open", entry.path().toString());
+                return Resolution.detach(argv, "Opening with xdg-open");
+            }
+            default -> {
+                return Resolution.unavailable("Unknown file type");
+            }
+        }
+    }
+
+    private Optional<List<String>> resolveEditorArgv() {
         String editor = firstNonNull(System.getenv("VISUAL"), System.getenv("EDITOR"));
         if (editor == null) {
             return Optional.empty();
@@ -64,72 +218,6 @@ public final class FileOpener {
             return Optional.of(argv);
         } catch (IllegalArgumentException exception) {
             return Optional.empty();
-        }
-    }
-
-    public Optional<List<String>> resolveXdgOpen(Path path) {
-        if (!isExecutableOnPath("xdg-open")) {
-            return Optional.empty();
-        }
-        return Optional.of(List.of("xdg-open", path.toString()));
-    }
-
-    public Optional<List<String>> resolveExecutable(Path path) {
-        return Optional.of(List.of(path.toString()));
-    }
-
-    public List<String> parseUserCommand(String userInput) {
-        return CommandSplitter.split(userInput);
-    }
-
-    public List<String> parseShellCommand(String userInput) {
-        String shellCommand = userInput.startsWith("!")
-                ? userInput.substring(1) : userInput;
-        return List.of("/bin/sh", "-c", shellCommand);
-    }
-
-    public boolean isShellCommand(String userInput) {
-        return CommandSplitter.isShellCommand(userInput);
-    }
-
-    public Result runBlocking(List<String> argv, Path workingDirectory) {
-        if (argv == null || argv.isEmpty()) {
-            return Result.failed("empty command");
-        }
-        try {
-            ProcessBuilder builder = new ProcessBuilder(argv);
-            if (workingDirectory != null) {
-                builder.directory(workingDirectory.toFile());
-            }
-            builder.inheritIO();
-            int exitCode = builder.start().waitFor();
-            if (exitCode == 0) {
-                return Result.ok(argv.get(0) + " exited cleanly");
-            }
-            return Result.failed(argv.get(0) + " exited with code " + exitCode);
-        } catch (IOException exception) {
-            return Result.failed("Cannot run '" + argv.get(0) + "': "
-                    + exception.getMessage());
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            return Result.failed("interrupted");
-        }
-    }
-
-    public Result runDetached(List<String> argv, Path workingDirectory) {
-        if (argv == null || argv.isEmpty()) {
-            return Result.failed("empty command");
-        }
-        try {
-            ProcessBuilder builder = new ProcessBuilder(argv);
-            if (workingDirectory != null) {
-                builder.directory(workingDirectory.toFile());
-            }
-            builder.start();
-            return Result.ok("Launched " + argv.get(0));
-        } catch (IOException exception) {
-            return Result.failed("Cannot launch '" + argv.get(0) + "': "
-                    + exception.getMessage());
         }
     }
 
@@ -158,5 +246,21 @@ public final class FileOpener {
             }
         }
         return false;
+    }
+
+    // ---- Command parsing helpers ----
+
+    public boolean isShellCommand(String userInput) {
+        return CommandSplitter.isShellCommand(userInput);
+    }
+
+    public List<String> parseUserCommand(String userInput) {
+        return CommandSplitter.split(userInput);
+    }
+
+    public List<String> parseShellCommand(String userInput) {
+        String shellCommand = userInput.startsWith("!")
+                ? userInput.substring(1) : userInput;
+        return List.of("/bin/sh", "-c", shellCommand);
     }
 }

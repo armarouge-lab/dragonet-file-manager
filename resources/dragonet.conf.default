@@ -62,6 +62,12 @@ watch_directory=true
 # Tree character set: auto, utf8, or ascii. auto detects from LANG.
 tree_style=auto
 
+# Imp Media Dispatcher mode: auto, block, or detach.
+#   auto   - block for text files, detach for image/binary (recommended)
+#   block  - always suspend the TUI while the handler runs
+#   detach - always run in background (breaks vim/nano)
+imp_mode=auto
+
 # Metadata detail level: 0 = name+size, 1 = +date, 2 = +mode+owner, 3 = name only.
 info_level=0
 

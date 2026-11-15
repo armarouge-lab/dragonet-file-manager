@@ -37,6 +37,7 @@ public final class ConfigBuilder {
     private boolean sortLocale = true;
     private boolean watchDirectory = true;
     private Config.TreeStyle treeStyle = Config.TreeStyle.AUTO;
+    private Config.ImpMode impMode = Config.ImpMode.AUTO;
     private int infoLevel = 0;
     private String chafaCommand = "chafa";
     private String fileCommand = "file";
@@ -74,6 +75,7 @@ public final class ConfigBuilder {
             case "sort_locale" -> this.sortLocale = parseBoolean(key, value, source, line);
             case "watch_directory" -> this.watchDirectory = parseBoolean(key, value, source, line);
             case "tree_style" -> this.treeStyle = parseTreeStyle(key, value, source, line);
+            case "imp_mode" -> this.impMode = parseImpMode(key, value, source, line);
             case "info_level" -> this.infoLevel = parseRangeInt(key, value, source, line, 0, 3);
             case "chafa_command" -> this.chafaCommand = value;
             case "file_command" -> this.fileCommand = value;
@@ -98,7 +100,7 @@ public final class ConfigBuilder {
                  "trash_auto_trim", "trash_max_age_days", "trash_max_size_gb",
                  "follow_symlinks", "history_limit", "undo_limit", "humanize",
                  "date_relative", "sort_locale", "watch_directory", "tree_style",
-                 "info_level", "chafa_command", "file_command",
+                 "imp_mode", "info_level", "chafa_command", "file_command",
                  "open_text_editor", "open_media_player" -> true;
             default -> false;
         };
@@ -115,7 +117,7 @@ public final class ConfigBuilder {
                 previewMaxBytes, confirmDelete, trashEnabled, trashAutoTrim,
                 trashMaxAgeDays, trashMaxSizeGigabytes, followSymlinks,
                 historyLimit, undoLimit, humanize, dateRelative, sortLocale,
-                watchDirectory, treeStyle, infoLevel, chafaCommand, fileCommand,
+                watchDirectory, treeStyle, impMode, infoLevel, chafaCommand, fileCommand,
                 openTextEditor, openMediaPlayer
         );
     }
@@ -226,6 +228,17 @@ public final class ConfigBuilder {
             case "ascii" -> Config.TreeStyle.ASCII;
             default -> throw new ConfigException(source, line, key, value,
                     "expected one of: auto, utf8, ascii");
+        };
+    }
+
+    private static Config.ImpMode parseImpMode(String key, String value, Path source, int line)
+            throws ConfigException {
+        return switch (value.trim().toLowerCase(Locale.ROOT)) {
+            case "auto" -> Config.ImpMode.AUTO;
+            case "block" -> Config.ImpMode.BLOCK;
+            case "detach" -> Config.ImpMode.DETACH;
+            default -> throw new ConfigException(source, line, key, value,
+                    "expected one of: auto, block, detach");
         };
     }
 }
