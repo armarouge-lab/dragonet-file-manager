@@ -231,10 +231,7 @@ public final class Layout {
         }
         List<VisibleEntry> entries = treeModel.visibleEntries();
         int cursorIndex = treeModel.cursorIndex();
-        int scrollOffset = Math.max(0, cursorIndex - listHeight + 1);
-        if (cursorIndex < scrollOffset) {
-            scrollOffset = cursorIndex;
-        }
+        int scrollOffset = treeModel.adjustScrollOffset(listHeight);
         Instant now = Instant.now();
         for (int offset = 0; offset < listHeight; offset = offset + 1) {
             int entryIndex = scrollOffset + offset;

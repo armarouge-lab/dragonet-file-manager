@@ -253,7 +253,7 @@ public final class Tui {
             OperationResult result = operation.execute();
             statusMessage = result.message();
             if (result.success()) {
-                reloadTreeModel();
+                reloadSelectingName(text);
             }
             lastRenderedVersion = -1L;
         };
@@ -274,7 +274,7 @@ public final class Tui {
             OperationResult result = operation.execute();
             statusMessage = result.message();
             if (result.success()) {
-                reloadTreeModel();
+                reloadSelectingName(text);
             }
             lastRenderedVersion = -1L;
         };
@@ -307,7 +307,7 @@ public final class Tui {
                 OperationResult result = operation.execute();
                 statusMessage = result.message();
                 if (result.success()) {
-                    reloadTreeModel();
+                    reloadSelectingName(captured);
                 }
                 lastRenderedVersion = -1L;
             };
@@ -347,7 +347,7 @@ public final class Tui {
                         OperationResult overwriteResult = overwrite.execute();
                         statusMessage = overwriteResult.message();
                         if (overwriteResult.success()) {
-                            reloadTreeModel();
+                            reloadSelectingName(newName);
                         }
                     } else {
                         statusMessage = "Cancelled";
@@ -357,7 +357,7 @@ public final class Tui {
             } else {
                 statusMessage = result.message();
                 if (result.success()) {
-                    reloadTreeModel();
+                    reloadSelectingName(newName);
                 }
             }
             lastRenderedVersion = -1L;
@@ -386,7 +386,7 @@ public final class Tui {
             OperationResult result = trashStore.moveToTrash(target.path());
             statusMessage = result.message();
             if (result.success()) {
-                reloadTreeModel();
+                reloadPreservingCursor();
             }
             lastRenderedVersion = -1L;
         };
@@ -417,18 +417,51 @@ public final class Tui {
             OperationResult result = operation.execute();
             statusMessage = result.message();
             if (result.success()) {
-                reloadTreeModel();
+                reloadPreservingCursor();
             }
             lastRenderedVersion = -1L;
         };
         lastRenderedVersion = -1L;
     }
 
-    private void reloadTreeModel() {
+    /**
+     * Reloads the current directory after a destructive operation
+     * (delete, trash) and keeps the cursor at the closest valid index.
+     *
+     * <p>If the deleted item was in the middle, the entry that took its
+     * place (the next one) is now under the cursor. If it was the last,
+     * the cursor clamps to the previous entry. If the directory is now
+     * empty, the cursor sits on {@code ..}.
+     */
+    private void reloadPreservingCursor() {
+        Path currentDirectory = treeModel.directory();
+        int savedCursor = treeModel.cursorIndex();
+        int savedScroll = treeModel.scrollOffset();
+        try {
+            FileList baseList = FileList.load(currentDirectory, config);
+            TreeModel newModel = new TreeModel(baseList, config);
+            newModel.moveToIndex(savedCursor);
+            newModel.setScrollOffset(savedScroll);
+            treeModel = newModel;
+            lastRenderedVersion = -1L;
+        } catch (IOException exception) {
+            statusMessage = "Reload failed: " + exception.getMessage();
+        }
+    }
+
+    /**
+     * Reloads the current directory after a creation or rename and
+     * puts the cursor on the entry with the given name.
+     *
+     * @param name the basename of the newly created or renamed entry
+     */
+    private void reloadSelectingName(String name) {
         Path currentDirectory = treeModel.directory();
         try {
             FileList baseList = FileList.load(currentDirectory, config);
-            treeModel = new TreeModel(baseList, config);
+            TreeModel newModel = new TreeModel(baseList, config);
+            newModel.moveToEntryNamed(name);
+            treeModel = newModel;
             lastRenderedVersion = -1L;
         } catch (IOException exception) {
             statusMessage = "Reload failed: " + exception.getMessage();

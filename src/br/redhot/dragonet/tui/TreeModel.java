@@ -17,15 +17,14 @@ import java.util.concurrent.atomic.AtomicLong;
  * The inline-expansion model on top of one {@link FileList}.
  *
  * <p>Tracks which directories are expanded, caches their children,
- * and flattens the whole hierarchy into a {@link VisibleEntry} list on
- * demand. Expansion is asynchronous: {@link #expandCurrent()} returns
+ * flattens the whole hierarchy into a {@link VisibleEntry} list on
+ * demand, and stores the viewport scroll offset so the cursor can move
+ * inside the visible area without dragging the whole list.
+ *
+ * <p>Expansion is asynchronous: {@link #expandCurrent()} returns
  * immediately, the children are loaded on a background thread, and
  * {@link #version()} bumps when they arrive so the render loop knows to
  * redraw.
- *
- * <p>Cross-checks against the design: expansion state lives in memory
- * for the session and is dropped when the user enters a different
- * directory (a new {@code TreeModel} is created by {@code Tui}).
  */
 public final class TreeModel {
 
@@ -37,11 +36,13 @@ public final class TreeModel {
     private final Set<Path> failedPaths = ConcurrentHashMap.newKeySet();
     private final AtomicLong version = new AtomicLong(0L);
     private int cursorIndex;
+    private int scrollOffset;
 
     public TreeModel(FileList baseFileList, Config config) {
         this.baseFileList = Objects.requireNonNull(baseFileList, "baseFileList");
         this.config = Objects.requireNonNull(config, "config");
         this.cursorIndex = baseFileList.cursorIndex();
+        this.scrollOffset = 0;
     }
 
     public Path directory() {
@@ -58,6 +59,50 @@ public final class TreeModel {
 
     public int cursorIndex() {
         return cursorIndex;
+    }
+
+    public int scrollOffset() {
+        return scrollOffset;
+    }
+
+    public void setScrollOffset(int newOffset) {
+        this.scrollOffset = Math.max(0, newOffset);
+    }
+
+    /**
+     * Updates the scroll offset so the cursor is visible in a viewport
+     * of the given height, without unnecessarily dragging the list.
+     *
+     * <p>The offset only changes when the cursor is outside the current
+     * window. This is what lets the user move the cursor up and down
+     * within the viewport without scrolling the whole screen.
+     *
+     * @param viewportHeight number of list rows visible on screen
+     * @return the adjusted scroll offset
+     */
+    public int adjustScrollOffset(int viewportHeight) {
+        if (viewportHeight <= 0) {
+            scrollOffset = 0;
+            return scrollOffset;
+        }
+        int totalVisible = visibleEntries().size();
+        if (totalVisible <= 0) {
+            scrollOffset = 0;
+            return scrollOffset;
+        }
+        if (cursorIndex < scrollOffset) {
+            scrollOffset = cursorIndex;
+        } else if (cursorIndex >= scrollOffset + viewportHeight) {
+            scrollOffset = cursorIndex - viewportHeight + 1;
+        }
+        int maxScroll = Math.max(0, totalVisible - viewportHeight);
+        if (scrollOffset > maxScroll) {
+            scrollOffset = maxScroll;
+        }
+        if (scrollOffset < 0) {
+            scrollOffset = 0;
+        }
+        return scrollOffset;
     }
 
     public VisibleEntry current() {
@@ -101,6 +146,21 @@ public final class TreeModel {
         }
     }
 
+    /**
+     * Moves the cursor to the given visible index, clamped to the
+     * current visible range.
+     *
+     * @param index the target visible index
+     */
+    public void moveToIndex(int index) {
+        int count = visibleEntries().size();
+        int clamped = count == 0 ? 0 : Math.max(0, Math.min(index, count - 1));
+        if (clamped != cursorIndex) {
+            cursorIndex = clamped;
+            version.incrementAndGet();
+        }
+    }
+
     public void moveToEntryNamed(String name) {
         List<VisibleEntry> entries = visibleEntries();
         for (int index = 0; index < entries.size(); index = index + 1) {
@@ -113,14 +173,6 @@ public final class TreeModel {
         }
     }
 
-    /**
-     * Moves the cursor to the visible ancestor at {@code targetDepth}.
-     *
-     * <p>Scans upward from the current cursor. No-op if no such
-     * ancestor exists.
-     *
-     * @param targetDepth the depth of the ancestor (0 = cwd-level)
-     */
     public void moveCursorToDepth(int targetDepth) {
         List<VisibleEntry> entries = visibleEntries();
         for (int index = cursorIndex - 1; index >= 0; index = index - 1) {
@@ -136,10 +188,6 @@ public final class TreeModel {
         return expandedPaths.contains(path);
     }
 
-    /**
-     * Expands the current entry if it is a directory and not already
-     * expanded. Loads children asynchronously the first time.
-     */
     public void expandCurrent() {
         VisibleEntry current = current();
         if (current == null || current.entry() == null) {
@@ -161,9 +209,6 @@ public final class TreeModel {
         CompletableFuture.runAsync(() -> loadChildrenAsync(entry));
     }
 
-    /**
-     * Collapses the current entry if it is an expanded directory.
-     */
     public void collapseCurrent() {
         VisibleEntry current = current();
         if (current == null || current.entry() == null) {
@@ -189,15 +234,6 @@ public final class TreeModel {
         }
     }
 
-    /**
-     * Flattens the hierarchy into a list of visible rows.
-     *
-     * <p>Each row carries its depth, whether it is the last sibling,
-     * and the trailing {@code isLastSibling} flags of its ancestors.
-     * That is enough for {@link TreeRenderer} to draw the prefix.
-     *
-     * @return the visible rows in render order
-     */
     public List<VisibleEntry> visibleEntries() {
         List<VisibleEntry> result = new ArrayList<>();
         List<FileEntry> topLevel = baseFileList.entries();
