@@ -4,9 +4,12 @@ import br.redhot.dragonet.ExitCode;
 import br.redhot.dragonet.Logger;
 import br.redhot.dragonet.config.Config;
 import br.redhot.dragonet.config.Session;
+import br.redhot.dragonet.engine.ConflictResolution;
+import br.redhot.dragonet.engine.CopyOperation;
 import br.redhot.dragonet.engine.CreateDirectoryOperation;
 import br.redhot.dragonet.engine.CreateFileOperation;
 import br.redhot.dragonet.engine.CreateSymlinkOperation;
+import br.redhot.dragonet.engine.MoveOperation;
 import br.redhot.dragonet.engine.Operation;
 import br.redhot.dragonet.engine.OperationResult;
 import br.redhot.dragonet.engine.PermanentDeleteOperation;
@@ -22,10 +25,14 @@ import com.googlecode.lanterna.terminal.DefaultTerminalFactory;
 import com.googlecode.lanterna.terminal.Terminal;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Consumer;
 
 public final class Tui {
@@ -37,6 +44,7 @@ public final class Tui {
     private final Logger logger;
     private final TrashStore trashStore;
     private final TagState tagState = new TagState();
+    private final CutBuffer cutBuffer = new CutBuffer();
     private Session session;
 
     private TreeModel treeModel;
@@ -48,7 +56,11 @@ public final class Tui {
     private Consumer<Boolean> pendingModalAction;
     private MenuModal activeMenuModal;
     private Consumer<Character> pendingMenuAction;
+    private ConflictModal activeConflictModal;
+    private Consumer<ConflictResolution> pendingConflictAction;
     private String pendingSymlinkName;
+    private PasteSession pendingPaste;
+    private boolean shouldExit;
 
     public Tui(Config config, Session session, Environment environment, Logger logger) {
         this.config = Objects.requireNonNull(config, "config");
@@ -81,10 +93,16 @@ public final class Tui {
 
             while (running) {
                 if (treeModel.version() != lastRenderedVersion) {
-                    layout.draw(screen, treeModel, tagState, session.infoLevel(),
-                            statusMessage, activePrompt, activeModal, activeMenuModal);
+                    layout.draw(screen, treeModel, tagState, cutBuffer, session.infoLevel(),
+                            statusMessage, activePrompt, activeModal, activeMenuModal,
+                            activeConflictModal);
                     statusMessage = null;
                     lastRenderedVersion = treeModel.version();
+                }
+
+                if (shouldExit) {
+                    running = false;
+                    continue;
                 }
 
                 KeyStroke keyStroke;
@@ -100,6 +118,20 @@ public final class Tui {
                     } catch (InterruptedException exception) {
                         Thread.currentThread().interrupt();
                         break;
+                    }
+                    continue;
+                }
+
+                if (activeConflictModal != null) {
+                    ConflictModal.Result result = activeConflictModal.handleKey(keyStroke);
+                    if (!result.active()) {
+                        Consumer<ConflictResolution> action = pendingConflictAction;
+                        activeConflictModal = null;
+                        pendingConflictAction = null;
+                        lastRenderedVersion = -1L;
+                        if (action != null) {
+                            action.accept(result.resolution());
+                        }
                     }
                     continue;
                 }
@@ -181,7 +213,7 @@ public final class Tui {
         if (keyType == KeyType.Character && keyStroke.isCtrlDown()) {
             char character = Character.toLowerCase(keyStroke.getCharacter());
             if (character == 'x') {
-                return false;
+                return handleExitRequest();
             }
             if (character == 'r') {
                 startRename();
@@ -199,10 +231,22 @@ public final class Tui {
                 handleClearTags();
                 return true;
             }
+            if (character == 'k') {
+                startCut(CutBuffer.Mode.MOVE);
+                return true;
+            }
+            if (character == 'u') {
+                startPaste();
+                return true;
+            }
             return true;
         }
         if (keyType == KeyType.Character && keyStroke.isAltDown()) {
             char character = Character.toLowerCase(keyStroke.getCharacter());
+            if (character == '6') {
+                startCut(CutBuffer.Mode.COPY);
+                return true;
+            }
             switch (character) {
                 case 'i' -> toggleInfoLevel(screen);
                 case 's' -> startMkdir();
@@ -248,6 +292,33 @@ public final class Tui {
         return true;
     }
 
+    private boolean handleExitRequest() {
+        if (cutBuffer.isEmpty() && tagState.count() == 0) {
+            return false;
+        }
+        StringBuilder description = new StringBuilder();
+        if (!cutBuffer.isEmpty()) {
+            String label = cutBuffer.mode() == CutBuffer.Mode.MOVE ? "cut" : "copy";
+            description.append(cutBuffer.count()).append(" in ").append(label).append("buffer");
+        }
+        if (tagState.count() > 0) {
+            if (description.length() > 0) {
+                description.append(" and ");
+            }
+            description.append(tagState.count()).append(" tagged");
+        }
+        description.append(". Exit anyway?");
+        activeModal = new Modal(description.toString());
+        pendingModalAction = (confirmed) -> {
+            if (confirmed) {
+                shouldExit = true;
+            }
+            lastRenderedVersion = -1L;
+        };
+        lastRenderedVersion = -1L;
+        return true;
+    }
+
     private void applyNavigateResult(NavigateResult result) {
         if (result.treeModel != treeModel) {
             treeModel = result.treeModel;
@@ -269,6 +340,166 @@ public final class Tui {
         int currentLevel = MetadataFormatter.effectiveLevel(session.infoLevel(), columns);
         int next = MetadataFormatter.nextLevel(currentLevel, columns);
         session = session.withInfoLevel(next);
+        lastRenderedVersion = -1L;
+    }
+
+    private void startCut(CutBuffer.Mode mode) {
+        List<Path> selected = collectSelectedPaths();
+        if (selected.isEmpty()) {
+            statusMessage = "Nothing to " + (mode == CutBuffer.Mode.MOVE ? "cut" : "copy");
+            lastRenderedVersion = -1L;
+            return;
+        }
+        cutBuffer.set(mode, selected);
+        String verb = mode == CutBuffer.Mode.MOVE ? "Cut" : "Copy";
+        statusMessage = verb + ": " + selected.size()
+                + (selected.size() == 1 ? " item" : " items")
+                + " — navigate to target, then ^U";
+        lastRenderedVersion = -1L;
+    }
+
+    private List<Path> collectSelectedPaths() {
+        Set<Path> paths = new LinkedHashSet<>(tagState.paths());
+        if (paths.isEmpty()) {
+            VisibleEntry current = treeModel.current();
+            if (current != null && current.entry() != null && !current.entry().isParent()) {
+                paths.add(current.entry().path());
+            }
+        }
+        return new ArrayList<>(paths);
+    }
+
+    private void startPaste() {
+        if (cutBuffer.isEmpty()) {
+            statusMessage = "Nothing to paste";
+            lastRenderedVersion = -1L;
+            return;
+        }
+        pendingPaste = new PasteSession(cutBuffer.mode(),
+                new ArrayList<>(cutBuffer.paths()));
+        processNextPasteItem();
+    }
+
+    private void processNextPasteItem() {
+        if (pendingPaste == null) {
+            return;
+        }
+        if (pendingPaste.remaining.isEmpty()) {
+            finishPaste();
+            return;
+        }
+        Path source = pendingPaste.remaining.get(0);
+        String name = source.getFileName() == null ? "" : source.getFileName().toString();
+        Path target = treeModel.directory().resolve(name);
+
+        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+            if (pendingPaste.overwriteAll) {
+                executePasteItem(source, target, true);
+                return;
+            }
+            if (pendingPaste.skipAll) {
+                pendingPaste.remaining.remove(0);
+                processNextPasteItem();
+                return;
+            }
+            activeConflictModal = new ConflictModal(name);
+            pendingConflictAction = (resolution) -> {
+                if (resolution == null) {
+                    finishPasteAborted();
+                    return;
+                }
+                switch (resolution) {
+                    case OVERWRITE -> executePasteItem(source, target, true);
+                    case SKIP -> {
+                        pendingPaste.remaining.remove(0);
+                        processNextPasteItem();
+                    }
+                    case RENAME -> promptRenameForConflict(source);
+                    case ABORT -> finishPasteAborted();
+                    case OVERWRITE_ALL -> {
+                        pendingPaste.overwriteAll = true;
+                        executePasteItem(source, target, true);
+                    }
+                    case SKIP_ALL -> {
+                        pendingPaste.skipAll = true;
+                        pendingPaste.remaining.remove(0);
+                        processNextPasteItem();
+                    }
+                    default -> finishPasteAborted();
+                }
+            };
+            lastRenderedVersion = -1L;
+            return;
+        }
+
+        executePasteItem(source, target, false);
+    }
+
+    private void promptRenameForConflict(Path source) {
+        String current = source.getFileName() == null ? "" : source.getFileName().toString();
+        activePrompt = new Prompt("New name: ", current);
+        pendingPromptAction = (newName) -> {
+            if (newName.isBlank()) {
+                finishPasteAborted();
+                return;
+            }
+            Path target = treeModel.directory().resolve(newName);
+            if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+                statusMessage = "Exists: " + newName;
+                pendingPaste.remaining.remove(0);
+                processNextPasteItem();
+                return;
+            }
+            executePasteItem(source, target, false);
+        };
+        lastRenderedVersion = -1L;
+    }
+
+    private void executePasteItem(Path source, Path target, boolean overwrite) {
+        if (CopyOperation.isSparse(source) && !pendingPaste.sparseConfirmed) {
+            activeModal = new Modal("Sparse file. Copying may use full logical size. Continue?");
+            pendingModalAction = (confirmed) -> {
+                if (confirmed) {
+                    pendingPaste.sparseConfirmed = true;
+                    runPasteOperation(source, target, overwrite);
+                } else {
+                    finishPasteAborted();
+                }
+            };
+            lastRenderedVersion = -1L;
+            return;
+        }
+        runPasteOperation(source, target, overwrite);
+    }
+
+    private void runPasteOperation(Path source, Path target, boolean overwrite) {
+        OperationResult result = pendingPaste.mode == CutBuffer.Mode.MOVE
+                ? new MoveOperation(source, target, environment.homeDirectory(), overwrite).execute()
+                : new CopyOperation(source, target, environment.homeDirectory(), overwrite).execute();
+        if (result.success()) {
+            pendingPaste.successCount = pendingPaste.successCount + 1;
+        } else {
+            pendingPaste.failureCount = pendingPaste.failureCount + 1;
+        }
+        pendingPaste.remaining.remove(0);
+        processNextPasteItem();
+    }
+
+    private void finishPaste() {
+        int success = pendingPaste.successCount;
+        int failure = pendingPaste.failureCount;
+        String verb = pendingPaste.mode == CutBuffer.Mode.MOVE ? "Moved" : "Copied";
+        statusMessage = failure == 0
+                ? verb + " " + success
+                : verb + " " + success + ", " + failure + " failed";
+        cutBuffer.clear();
+        pendingPaste = null;
+        reloadPreservingCursor();
+    }
+
+    private void finishPasteAborted() {
+        statusMessage = "Paste aborted";
+        pendingPaste = null;
         lastRenderedVersion = -1L;
     }
 
@@ -638,4 +869,19 @@ public final class Tui {
     }
 
     private record NavigateResult(TreeModel treeModel, String statusMessage) {}
+
+    private static final class PasteSession {
+        final CutBuffer.Mode mode;
+        final List<Path> remaining;
+        boolean overwriteAll;
+        boolean skipAll;
+        boolean sparseConfirmed;
+        int successCount;
+        int failureCount;
+
+        PasteSession(CutBuffer.Mode mode, List<Path> remaining) {
+            this.mode = mode;
+            this.remaining = remaining;
+        }
+    }
 }

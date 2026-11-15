@@ -23,6 +23,14 @@ if [ ! -f "$lanternaJar" ]; then
     exit 1
 fi
 
+# Guard: the wrong Lanterna Screen import collapses the whole build with
+# hundreds of cascading "cannot find symbol" errors. Catch it up front.
+if grep -rn '^import com\.googlecode\.lanterna\.Screen;' "$sourceDirectory" > /dev/null 2>&1; then
+    printf '[FAIL] wrong Screen import (must be com.googlecode.lanterna.screen.Screen):\n' >&2
+    grep -rn '^import com\.googlecode\.lanterna\.Screen;' "$sourceDirectory" >&2
+    exit 1
+fi
+
 sourceCount=$(find "$sourceDirectory" -name '*.java' -type f | wc -l | tr -d ' ')
 
 if [ "$sourceCount" -eq 0 ]; then
@@ -42,7 +50,6 @@ javac -encoding UTF-8 -Xlint:all \
       -d "$classesDirectory" \
       @"$sourcesList"
 
-# Extract Lanterna's classes into the staging dir so the final jar is a fat jar.
 printf '[info] bundling Lanterna into dragonet.jar\n'
 ( cd "$classesDirectory" && jar --extract --file "$lanternaJar" )
 
