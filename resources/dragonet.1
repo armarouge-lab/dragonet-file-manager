@@ -1,0 +1,233 @@
+.Dd November 15, 2026
+.Dt DRAGONET 1
+.Os Redhot
+.Sh NAME
+.Nm dragonet ,
+.Nm dgn
+.Nd TUI file manager for the Redhot suite
+.Sh SYNOPSIS
+.Nm
+.Op Ar path
+.Nm
+.Op Fl -debug
+.Op Fl -dry-run
+.Op Fl -json
+.Op Fl -yes
+.Op Fl -config Ar file
+.Ar command
+.Op Ar args ...
+.Sh DESCRIPTION
+.Nm
+is a terminal-based file manager.
+It navigates directories, performs file operations, and dispatches
+files to other Redhot applications.
+The canonical binary is
+.Nm dragonet ;
+.Nm dgn
+is an alias.
+.Pp
+Running
+.Nm
+with no arguments opens the TUI in the current directory.
+The full list of headless commands is documented under
+.Sx COMMANDS .
+.Sh COMMANDS
+.Bl -tag -width Ds
+.It Fl -list Op Ar path
+List directory contents as a table.
+.It Fl -ls-json Op Ar path
+List directory contents as JSON.
+Equivalent to
+.Fl -list Fl -json .
+.It Fl -cp Ar src ... dst
+Copy files.
+Multiple sources require
+.Ar dst
+to be a directory.
+.It Fl -mv Ar src ... dst
+Move files.
+Same multi-source rule as
+.Fl -cp .
+.It Fl -rm Ar path ...
+Move files to trash.
+.It Fl -rm-permanent Ar path ...
+Delete permanently.
+Requires
+.Fl -yes
+to confirm.
+.It Fl -restore Ar uuid
+Restore a trashed item by UUID (from
+.Fl -trash-list ) .
+.It Fl -trash-list
+List trashed items.
+.It Fl -mkdir Ar path ...
+Create directories.
+.It Fl -touch Ar path ...
+Create empty files.
+.It Fl -dump-config
+Print the default configuration to stdout.
+.It Fl -selftest
+Check the runtime environment.
+Exit 0 when required checks pass, 1 otherwise.
+.It Fl -version
+Print version.
+.It Fl -help , Fl -h
+Print help.
+.El
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl -config Ar file
+Use the given configuration file instead of the default search path.
+.It Fl -debug
+Enable debug logging to stderr.
+.It Fl -dry-run
+Plan operations without executing them.
+.It Fl -json
+Emit JSON where applicable
+.Pq Fl -list , Fl -ls-json .
+.It Fl -yes
+Bypass the confirmation guard for
+.Fl -rm-permanent .
+.El
+.Sh KEYBINDINGS
+Navigation uses arrow keys, Home/End, PageUp/PageDown.
+.Bl -tag -width Ds
+.It Cm Enter
+Open file or enter directory.
+.It Cm Backspace
+Go to parent directory.
+.It Cm Tab
+Focus preview pane.
+.It Cm Space
+Tag or untag the current entry.
+.It Cm Esc
+Cancel.
+.It Cm ^X
+Exit.
+.El
+.Pp
+Ctrl-key bindings:
+.Bl -tag -width Ds
+.It Cm ^G
+Help.
+.It Cm ^W
+Find within current directory.
+.It Cm ^L
+Toggle preview.
+.It Cm ^B , ^F
+History back / forward.
+.It Cm ^D
+Move entry to trash.
+.It Cm ^P
+Permanent delete (requires typing YES).
+.It Cm ^R
+Rename.
+.It Cm ^T
+Tag toggle.
+.It Cm ^A
+Tag all in current level.
+.It Cm ^N
+Create new file.
+.It Cm ^O
+Open with a custom command.
+.El
+.Pp
+Alt-key bindings:
+.Bl -tag -width Ds
+.It Cm M-C , M-V , M-X
+Copy, paste, cut.
+.It Cm M-E
+Edit with $VISUAL/$EDITOR (bypasses Imp).
+.It Cm M-M
+Create directory.
+.It Cm M-S
+Create symlink.
+.It Cm M-H
+Toggle hidden files.
+.It Cm M-I
+Cycle metadata level.
+.It Cm M-B
+Bookmarks menu.
+.It Cm M-Z
+Suspend TUI and open $SHELL.
+.It Cm M-U
+Undo last operation.
+.El
+.Sh FILES
+.Bl -tag -width Ds
+.It Pa /etc/redhot/dragonet/dragonet.conf
+System-wide configuration (Debian, OpenBSD).
+.It Pa /usr/local/etc/redhot/dragonet/dragonet.conf
+System-wide configuration (FreeBSD).
+.It Pa ~/.config/redhot/dragonet/dragonet.conf
+User configuration.
+.It Pa ~/.config/redhot/dragonet/bookmarks.conf
+User bookmarks.
+.It Pa ~/.local/state/redhot/dragonet/session.conf
+Per-session state (sort, preview, info level).
+.It Pa ~/.local/state/redhot/dragonet/history
+Navigation history.
+.It Pa ~/.local/state/redhot/dragonet/undo.log
+Undo journal.
+.It Pa ~/.local/share/Trash
+XDG trash directory.
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds
+.It 0
+Success.
+.It 1
+Operation failed.
+.It 2
+Nothing to do.
+.It 3
+Lock held by another instance.
+.It 4
+Configuration error.
+.It 5
+Precondition failed.
+.It 6
+Multi-file operation completed with partial failures.
+.It 7
+Canceled by user.
+.It 8
+No handler available for the requested file type.
+.It 64
+Usage error.
+.El
+.Sh EXAMPLES
+Open the TUI in the current directory:
+.Bd -literal -offset indent
+dragonet
+.Ed
+.Pp
+Open the TUI in
+.Pa /tmp :
+.Bd -literal -offset indent
+dgn /tmp
+.Ed
+.Pp
+List a directory as JSON:
+.Bd -literal -offset indent
+dragonet --ls-json ~/Downloads
+.Ed
+.Pp
+Copy multiple files into a destination directory:
+.Bd -literal -offset indent
+dragonet --cp a.txt b.txt ~/target/
+.Ed
+.Pp
+Delete permanently (requires confirmation):
+.Bd -literal -offset indent
+dragonet --rm-permanent --yes ~/tmp/old.log
+.Ed
+.Pp
+Verify the environment:
+.Bd -literal -offset indent
+dragonet --selftest
+.Ed
+.Sh SEE ALSO
+.Xr imp 1 ,
+.Xr devil 1
+.Sh AUTHORS
+.An Latias
