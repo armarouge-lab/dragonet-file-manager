@@ -56,13 +56,10 @@ public final class Layout {
                 terminalColumns);
         String nextLevelLabel = MetadataFormatter.levelLabel(nextLevel);
 
-        boolean fullChrome = terminalRows >= ROWS_FULL_CHROME;
-        boolean compactChrome = terminalRows >= ROWS_COMPACT_CHROME;
-
-        if (fullChrome) {
+        if (terminalRows >= ROWS_FULL_CHROME) {
             drawFull(screen, leftPadding, contentWidth, terminalRows, treeModel, statusMessage,
                     segments, plan, nextLevelLabel, activePrompt, activeModal);
-        } else if (compactChrome) {
+        } else if (terminalRows >= ROWS_COMPACT_CHROME) {
             drawCompact(screen, leftPadding, contentWidth, terminalRows, treeModel, statusMessage,
                     segments, plan, nextLevelLabel, activePrompt, activeModal);
         } else {
@@ -388,15 +385,22 @@ public final class Layout {
         if (width >= 40) {
             col = drawShortcut(screen, col, row, "\u2191\u2193", " Nav", maxCol);
         }
-        if (width >= 56) {
-            col = drawShortcut(screen, col, row, "M-S", " Mkdir", maxCol);
+        if (width >= 50) {
+            col = drawShortcut(screen, col, row, "^D", " Del", maxCol);
+        }
+        if (width >= 60) {
+            col = drawShortcut(screen, col, row, "M-I", " \u203a" + nextLevelLabel, maxCol);
         }
         if (width >= 72) {
-            col = drawShortcut(screen, col, row, "M-N", " Touch", maxCol);
+            col = drawShortcut(screen, col, row, "M-D", " Purge", maxCol);
             col = drawShortcut(screen, col, row, "^R", " Rename", maxCol);
         }
-        if (width >= 88) {
-            col = drawShortcut(screen, col, row, "M-Y", " Symlink", maxCol);
+        if (width >= 86) {
+            col = drawShortcut(screen, col, row, "M-S", " Mkdir", maxCol);
+            col = drawShortcut(screen, col, row, "M-N", " Touch", maxCol);
+        }
+        if (width >= 100) {
+            drawShortcut(screen, col, row, "M-Y", " Symlink", maxCol);
         }
     }
 

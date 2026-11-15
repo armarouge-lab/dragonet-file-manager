@@ -9,8 +9,10 @@ import br.redhot.dragonet.engine.CreateFileOperation;
 import br.redhot.dragonet.engine.CreateSymlinkOperation;
 import br.redhot.dragonet.engine.Operation;
 import br.redhot.dragonet.engine.OperationResult;
+import br.redhot.dragonet.engine.PermanentDeleteOperation;
 import br.redhot.dragonet.engine.RenameOperation;
 import br.redhot.dragonet.env.Environment;
+import br.redhot.dragonet.trash.TrashStore;
 
 import com.googlecode.lanterna.input.KeyStroke;
 import com.googlecode.lanterna.input.KeyType;
@@ -31,6 +33,7 @@ public final class Tui {
     private final Config config;
     private final Environment environment;
     private final Logger logger;
+    private final TrashStore trashStore;
     private Session session;
 
     private TreeModel treeModel;
@@ -47,6 +50,7 @@ public final class Tui {
         this.session = Objects.requireNonNull(session, "session");
         this.environment = Objects.requireNonNull(environment, "environment");
         this.logger = Objects.requireNonNull(logger, "logger");
+        this.trashStore = new TrashStore(environment.trashPath(), environment.homeDirectory());
     }
 
     public ExitCode run(Path initialDirectory) {
@@ -98,7 +102,6 @@ public final class Tui {
                 if (activeModal != null) {
                     Modal.Result result = activeModal.handleKey(keyStroke);
                     if (!result.active()) {
-                        Modal closing = activeModal;
                         Consumer<Boolean> action = pendingModalAction;
                         activeModal = null;
                         pendingModalAction = null;
@@ -106,7 +109,6 @@ public final class Tui {
                         if (action != null) {
                             action.accept(result.confirmed());
                         }
-                        Objects.requireNonNull(closing, "closing");
                     }
                     continue;
                 }
@@ -131,7 +133,6 @@ public final class Tui {
                             action.accept(text);
                         }
                     } else {
-                        // Still editing; force redraw of prompt.
                         lastRenderedVersion = -1L;
                     }
                     continue;
@@ -167,6 +168,10 @@ public final class Tui {
                 startRename();
                 return true;
             }
+            if (character == 'd') {
+                startTrash();
+                return true;
+            }
             return true;
         }
         if (keyType == KeyType.Character && keyStroke.isAltDown()) {
@@ -176,8 +181,9 @@ public final class Tui {
                 case 's' -> startMkdir();
                 case 'n' -> startTouch();
                 case 'y' -> startSymlink();
+                case 'd' -> startPermanentDelete();
                 default -> {
-                    // Ignored
+                    // Ignored.
                 }
             }
             return true;
@@ -195,18 +201,15 @@ public final class Tui {
             return true;
         }
         if (keyType == KeyType.ArrowLeft) {
-            NavigateResult result = handleArrowLeft();
-            applyNavigateResult(result);
+            applyNavigateResult(handleArrowLeft());
             return true;
         }
         if (keyType == KeyType.Enter) {
-            NavigateResult result = handleEnter();
-            applyNavigateResult(result);
+            applyNavigateResult(handleEnter());
             return true;
         }
         if (keyType == KeyType.Backspace) {
-            NavigateResult result = navigateToParent();
-            applyNavigateResult(result);
+            applyNavigateResult(navigateToParent());
             return true;
         }
         return true;
@@ -356,6 +359,65 @@ public final class Tui {
                 if (result.success()) {
                     reloadTreeModel();
                 }
+            }
+            lastRenderedVersion = -1L;
+        };
+        lastRenderedVersion = -1L;
+    }
+
+    private void startTrash() {
+        VisibleEntry currentEntry = treeModel.current();
+        if (currentEntry == null || currentEntry.entry() == null) {
+            return;
+        }
+        FileEntry target = currentEntry.entry();
+        if (target.isParent()) {
+            statusMessage = "Cannot delete ..";
+            lastRenderedVersion = -1L;
+            return;
+        }
+        activeModal = new Modal("Trash '" + target.name() + "'?");
+        pendingModalAction = (confirmed) -> {
+            if (!confirmed) {
+                statusMessage = "Cancelled";
+                lastRenderedVersion = -1L;
+                return;
+            }
+            OperationResult result = trashStore.moveToTrash(target.path());
+            statusMessage = result.message();
+            if (result.success()) {
+                reloadTreeModel();
+            }
+            lastRenderedVersion = -1L;
+        };
+        lastRenderedVersion = -1L;
+    }
+
+    private void startPermanentDelete() {
+        VisibleEntry currentEntry = treeModel.current();
+        if (currentEntry == null || currentEntry.entry() == null) {
+            return;
+        }
+        FileEntry target = currentEntry.entry();
+        if (target.isParent()) {
+            statusMessage = "Cannot delete ..";
+            lastRenderedVersion = -1L;
+            return;
+        }
+        activePrompt = new Prompt(
+                "Type YES to permanently delete '" + target.name() + "': ");
+        pendingPromptAction = (text) -> {
+            if (!"YES".equals(text)) {
+                statusMessage = "Cancelled";
+                lastRenderedVersion = -1L;
+                return;
+            }
+            Operation operation = new PermanentDeleteOperation(
+                    target.path(), environment.homeDirectory());
+            OperationResult result = operation.execute();
+            statusMessage = result.message();
+            if (result.success()) {
+                reloadTreeModel();
             }
             lastRenderedVersion = -1L;
         };

@@ -9,11 +9,15 @@ import br.redhot.dragonet.engine.CreateFileOperation;
 import br.redhot.dragonet.engine.Operation;
 import br.redhot.dragonet.engine.OperationResult;
 import br.redhot.dragonet.env.Environment;
+import br.redhot.dragonet.trash.TrashedItem;
+import br.redhot.dragonet.trash.TrashStore;
 import br.redhot.dragonet.tui.Tui;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -22,7 +26,10 @@ public final class Cli {
 
     public static final String PROGRAM_NAME = "dragon";
     public static final String APPLICATION_NAME = "dragonet";
-    public static final String APPLICATION_VERSION = "0.1.0a";
+    public static final String APPLICATION_VERSION = "0.2a";
+
+    private static final DateTimeFormatter TRASH_DATE_FORMAT =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final List<String> arguments;
     private final Logger logger;
@@ -79,6 +86,12 @@ public final class Cli {
                 return runHeadlessCreate("--mkdir", rest);
             case "--touch":
                 return runHeadlessCreate("--touch", rest);
+            case "--rm":
+                return runHeadlessTrash(rest);
+            case "--trash-list":
+                return runTrashList();
+            case "--restore":
+                return runRestore(rest);
             default:
                 break;
         }
@@ -123,10 +136,96 @@ public final class Cli {
                 failureCount = failureCount + 1;
             }
         }
+        return summarize(failureCount, paths.size());
+    }
+
+    private ExitCode runHeadlessTrash(List<String> paths) {
+        if (paths.isEmpty()) {
+            logger.fail("--rm requires at least one path");
+            return ExitCode.EX_USAGE;
+        }
+        Environment environment;
+        try {
+            environment = Environment.detect();
+            environment.init();
+        } catch (IllegalStateException | IOException exception) {
+            logger.fail("environment error: " + exception.getMessage());
+            return ExitCode.EX_OP_FAILED;
+        }
+        TrashStore trashStore = new TrashStore(
+                environment.trashPath(), environment.homeDirectory());
+        int failureCount = 0;
+        for (String rawPath : paths) {
+            OperationResult result = trashStore.moveToTrash(Path.of(rawPath));
+            if (result.success()) {
+                logger.ok(result.message());
+            } else {
+                logger.fail(result.message());
+                failureCount = failureCount + 1;
+            }
+        }
+        return summarize(failureCount, paths.size());
+    }
+
+    private ExitCode runTrashList() {
+        Environment environment;
+        try {
+            environment = Environment.detect();
+            environment.init();
+        } catch (IllegalStateException | IOException exception) {
+            logger.fail("environment error: " + exception.getMessage());
+            return ExitCode.EX_OP_FAILED;
+        }
+        TrashStore trashStore = new TrashStore(
+                environment.trashPath(), environment.homeDirectory());
+        List<TrashedItem> items = trashStore.listItems();
+        if (items.isEmpty()) {
+            System.out.println("(trash is empty)");
+            return ExitCode.EX_NOTHING;
+        }
+        System.out.printf("%-32s  %-19s  %s%n", "UUID", "Deleted", "Original Path");
+        for (TrashedItem item : items) {
+            String deleted = item.deletionDate()
+                    .atZone(ZoneId.systemDefault())
+                    .format(TRASH_DATE_FORMAT);
+            System.out.printf("%-32s  %-19s  %s%n",
+                    item.uuid(), deleted, item.originalPath());
+        }
+        return ExitCode.EX_OK;
+    }
+
+    private ExitCode runRestore(List<String> rest) {
+        if (rest.isEmpty()) {
+            logger.fail("--restore requires a uuid");
+            return ExitCode.EX_USAGE;
+        }
+        Environment environment;
+        try {
+            environment = Environment.detect();
+            environment.init();
+        } catch (IllegalStateException | IOException exception) {
+            logger.fail("environment error: " + exception.getMessage());
+            return ExitCode.EX_OP_FAILED;
+        }
+        TrashStore trashStore = new TrashStore(
+                environment.trashPath(), environment.homeDirectory());
+        OperationResult result = trashStore.restore(rest.get(0));
+        if (result.success()) {
+            logger.ok(result.message());
+            return ExitCode.EX_OK;
+        }
+        logger.fail(result.message());
+        if (result.targetExists()) {
+            return ExitCode.EX_PRECOND;
+        }
+        return ExitCode.EX_OP_FAILED;
+    }
+
+    private ExitCode summarize(int failureCount, int total) {
         if (failureCount == 0) {
             return ExitCode.EX_OK;
         }
-        if (failureCount == paths.size()) {
+        if (failureCount == total) {
             return ExitCode.EX_OP_FAILED;
         }
         return ExitCode.EX_PARTIAL;
@@ -141,7 +240,6 @@ public final class Cli {
             logger.fail("could not initialize environment: " + exception.getMessage());
             return ExitCode.EX_OP_FAILED;
         }
-
         Config config;
         try {
             config = new ConfigReader(environment, logger).read(explicitConfigFile);
@@ -149,9 +247,7 @@ public final class Cli {
             logger.fail(exception.getMessage());
             return ExitCode.EX_CONFIG_ERROR;
         }
-
         Session session = Session.load(environment.statePath("session.conf"));
-
         return new Tui(config, session, environment, logger).run(initialDirectory);
     }
 
@@ -173,6 +269,9 @@ public final class Cli {
         System.out.println("  --config <path>     use the given config file (overrides ~/.config)");
         System.out.println("  --mkdir <path>...   create directories (headless)");
         System.out.println("  --touch <path>...   create empty files (headless)");
+        System.out.println("  --rm <path>...      move to trash (headless)");
+        System.out.println("  --trash-list        list trashed items");
+        System.out.println("  --restore <uuid>    restore a trashed item by uuid");
         System.out.println();
         System.out.println("Run " + PROGRAM_NAME
                 + " with no arguments to open the TUI in the current directory.");
