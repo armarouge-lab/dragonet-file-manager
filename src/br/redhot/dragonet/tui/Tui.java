@@ -19,6 +19,7 @@ import br.redhot.dragonet.trash.TrashStore;
 import br.redhot.dragonet.undo.UndoEntry;
 import br.redhot.dragonet.undo.UndoLog;
 
+import com.googlecode.lanterna.TerminalSize;
 import com.googlecode.lanterna.input.KeyStroke;
 import com.googlecode.lanterna.input.KeyType;
 import com.googlecode.lanterna.screen.Screen;
@@ -43,12 +44,15 @@ import java.util.function.Consumer;
 public final class Tui {
 
     private static final long IDLE_SLEEP_MILLISECONDS = 50L;
+    private static final int PREVIEW_MIN_TOTAL_WIDTH = 100;
+    private static final int PREVIEW_MIN_ROWS = 10;
 
     private final Config config;
     private final Environment environment;
     private final Logger logger;
     private final TrashStore trashStore;
     private final UndoLog undoLog;
+    private final PreviewModel previewModel;
     private final TagState tagState = new TagState();
     private final CutBuffer cutBuffer = new CutBuffer();
     private Session session;
@@ -67,6 +71,9 @@ public final class Tui {
     private String pendingSymlinkName;
     private PasteSession pendingPaste;
     private boolean shouldExit;
+    private boolean previewVisible;
+    private boolean previewFocused;
+    private int previewScroll;
 
     public Tui(Config config, Session session, Environment environment, Logger logger) {
         this.config = Objects.requireNonNull(config, "config");
@@ -75,6 +82,10 @@ public final class Tui {
         this.logger = Objects.requireNonNull(logger, "logger");
         this.trashStore = new TrashStore(environment.trashPath(), environment.homeDirectory());
         this.undoLog = new UndoLog(environment.statePath("undo.log"), config.undoLimit());
+        this.previewModel = new PreviewModel(config.previewMaxBytes());
+        this.previewVisible = config.preview();
+        this.previewFocused = false;
+        this.previewScroll = 0;
     }
 
     public ExitCode run(Path initialDirectory) {
@@ -99,10 +110,16 @@ public final class Tui {
             boolean running = true;
 
             while (running) {
+                TerminalSize resized = screen.doResizeIfNecessary();
+                if (resized != null) {
+                    lastRenderedVersion = -1L;
+                }
+
                 if (treeModel.version() != lastRenderedVersion) {
-                    layout.draw(screen, treeModel, tagState, cutBuffer, session.infoLevel(),
-                            statusMessage, activePrompt, activeModal, activeMenuModal,
-                            activeConflictModal);
+                    previewScroll = layout.draw(screen, treeModel, tagState, cutBuffer,
+                            session.infoLevel(), statusMessage, activePrompt, activeModal,
+                            activeMenuModal, activeConflictModal, previewModel,
+                            previewVisible, previewFocused, previewScroll);
                     statusMessage = null;
                     lastRenderedVersion = treeModel.version();
                 }
@@ -214,13 +231,66 @@ public final class Tui {
 
     private boolean handleIdleKey(KeyStroke keyStroke, Screen screen) {
         KeyType keyType = keyStroke.getKeyType();
+
+        if (previewFocused) {
+            if (keyType == KeyType.Escape || keyType == KeyType.Tab) {
+                previewFocused = false;
+                if (isNarrowTerminal(screen)) {
+                    previewVisible = false;
+                }
+                lastRenderedVersion = -1L;
+                return true;
+            }
+            if (keyType == KeyType.ArrowDown) {
+                previewScroll = previewScroll + 1;
+                lastRenderedVersion = -1L;
+                return true;
+            }
+            if (keyType == KeyType.ArrowUp) {
+                previewScroll = Math.max(0, previewScroll - 1);
+                lastRenderedVersion = -1L;
+                return true;
+            }
+            if (keyType == KeyType.PageDown) {
+                previewScroll = previewScroll + 20;
+                lastRenderedVersion = -1L;
+                return true;
+            }
+            if (keyType == KeyType.PageUp) {
+                previewScroll = Math.max(0, previewScroll - 20);
+                lastRenderedVersion = -1L;
+                return true;
+            }
+            boolean passThrough = keyType == KeyType.Character && keyStroke.isCtrlDown()
+                    && (Character.toLowerCase(keyStroke.getCharacter()) == 'x'
+                        || Character.toLowerCase(keyStroke.getCharacter()) == 'l');
+            if (!passThrough) {
+                return true;
+            }
+        }
+
         if (keyType == KeyType.EOF) {
             return false;
+        }
+        if (keyType == KeyType.Tab) {
+            if (previewVisible) {
+                previewFocused = !previewFocused;
+                lastRenderedVersion = -1L;
+            }
+            return true;
         }
         if (keyType == KeyType.Character && keyStroke.isCtrlDown()) {
             char character = Character.toLowerCase(keyStroke.getCharacter());
             if (character == 'x') {
                 return handleExitRequest();
+            }
+            if (character == 'l') {
+                togglePreview(screen);
+                return true;
+            }
+            if (character == 'g') {
+                showHelp();
+                return true;
             }
             if (character == 'r') {
                 startRename();
@@ -275,10 +345,12 @@ public final class Tui {
         }
         if (keyType == KeyType.ArrowDown) {
             treeModel.moveDown();
+            previewScroll = 0;
             return true;
         }
         if (keyType == KeyType.ArrowUp) {
             treeModel.moveUp();
+            previewScroll = 0;
             return true;
         }
         if (keyType == KeyType.ArrowRight) {
@@ -287,17 +359,57 @@ public final class Tui {
         }
         if (keyType == KeyType.ArrowLeft) {
             applyNavigateResult(handleArrowLeft());
+            previewScroll = 0;
             return true;
         }
         if (keyType == KeyType.Enter) {
             applyNavigateResult(handleEnter());
+            previewScroll = 0;
             return true;
         }
         if (keyType == KeyType.Backspace) {
             applyNavigateResult(navigateToParent());
+            previewScroll = 0;
             return true;
         }
         return true;
+    }
+
+    private boolean isNarrowTerminal(Screen screen) {
+        TerminalSize size = screen.getTerminalSize();
+        return size.getColumns() < PREVIEW_MIN_TOTAL_WIDTH || size.getRows() < PREVIEW_MIN_ROWS;
+    }
+
+    private void togglePreview(Screen screen) {
+        if (isNarrowTerminal(screen)) {
+            if (previewVisible && previewFocused) {
+                previewVisible = false;
+                previewFocused = false;
+                previewScroll = 0;
+                statusMessage = "Preview: off";
+            } else {
+                previewVisible = true;
+                previewFocused = true;
+                previewScroll = 0;
+                statusMessage = "Preview: on (Esc to close)";
+            }
+        } else {
+            previewVisible = !previewVisible;
+            if (!previewVisible) {
+                previewFocused = false;
+                previewScroll = 0;
+            }
+            statusMessage = previewVisible ? "Preview: on" : "Preview: off";
+        }
+        lastRenderedVersion = -1L;
+    }
+
+    private void showHelp() {
+        activeModal = new Modal("Redhot Help not installed. Install: pkg install redhot-help");
+        pendingModalAction = (ignored) -> {
+            lastRenderedVersion = -1L;
+        };
+        lastRenderedVersion = -1L;
     }
 
     private boolean handleExitRequest() {
@@ -481,7 +593,6 @@ public final class Tui {
         Path source = pendingPaste.remaining.get(0);
         String name = source.getFileName() == null ? "" : source.getFileName().toString();
         Path target = treeModel.directory().resolve(name);
-
         if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
             if (pendingPaste.overwriteAll) {
                 executePasteItem(source, target, true);
@@ -521,7 +632,6 @@ public final class Tui {
             lastRenderedVersion = -1L;
             return;
         }
-
         executePasteItem(source, target, false);
     }
 

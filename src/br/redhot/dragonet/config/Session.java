@@ -27,7 +27,7 @@ public record Session(
     }
 
     public static Session defaults() {
-        return new Session(Config.SortOrder.NAME, false, false, true, 0);
+        return new Session(Config.SortOrder.NAME, false, false, false, 0);
     }
 
     public Session withInfoLevel(int newInfoLevel) {
@@ -91,7 +91,7 @@ public record Session(
         private Config.SortOrder sort = Config.SortOrder.NAME;
         private boolean sortReverse = false;
         private boolean showHidden = false;
-        private boolean preview = true;
+        private boolean preview = false;
         private int infoLevel = 0;
 
         void set(String key, String value) {

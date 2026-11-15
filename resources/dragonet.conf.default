@@ -18,7 +18,7 @@ sort=name
 sort_reverse=false
 
 # Preview pane: on or off.
-preview=on
+preview=off
 
 # Maximum number of bytes read for a text preview.
 preview_max_bytes=1048576

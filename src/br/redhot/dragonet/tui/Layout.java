@@ -18,10 +18,13 @@ import java.util.Objects;
 
 public final class Layout {
 
-    private static final int MAX_CONTENT_WIDTH = 100;
+    private static final int MAX_CONTENT_WIDTH = 140;
     private static final int MIN_HORIZONTAL_PADDING = 2;
     private static final int ROWS_FULL_CHROME = 10;
     private static final int ROWS_COMPACT_CHROME = 5;
+    private static final int PREVIEW_MIN_TOTAL_WIDTH = 100;
+    private static final int PREVIEW_COLUMN_WIDTH = 40;
+    private static final int PREVIEW_MIN_COLUMNS = 50;
 
     private final Config config;
     private final Environment environment;
@@ -33,10 +36,18 @@ public final class Layout {
         this.treeRenderer = Objects.requireNonNull(treeRenderer, "treeRenderer");
     }
 
-    public void draw(Screen screen, TreeModel treeModel, TagState tagState,
-                     CutBuffer cutBuffer, int infoLevel,
-                     String statusMessage, Prompt activePrompt, Modal activeModal,
-                     MenuModal activeMenuModal, ConflictModal activeConflictModal)
+    /**
+     * Renders a full frame.
+     *
+     * @return the clamped preview scroll offset; caller must store it
+     *         so scrolling stays bounded
+     */
+    public int draw(Screen screen, TreeModel treeModel, TagState tagState,
+                    CutBuffer cutBuffer, int infoLevel,
+                    String statusMessage, Prompt activePrompt, Modal activeModal,
+                    MenuModal activeMenuModal, ConflictModal activeConflictModal,
+                    PreviewModel previewModel, boolean previewVisible,
+                    boolean previewFocused, int previewScroll)
             throws IOException {
         TerminalSize size = screen.getTerminalSize();
         int terminalColumns = size.getColumns();
@@ -51,26 +62,38 @@ public final class Layout {
         }
         int leftPadding = (terminalColumns - contentWidth) / 2;
 
-        TreeRenderer.Segments segments = treeRenderer.chooseSegments(terminalColumns);
-        MetadataFormatter.DisplayPlan plan =
-                MetadataFormatter.planFor(infoLevel, terminalColumns);
-        int nextLevel = MetadataFormatter.nextLevel(
-                MetadataFormatter.effectiveLevel(infoLevel, terminalColumns),
-                terminalColumns);
-        String nextLevelLabel = MetadataFormatter.levelLabel(nextLevel);
+        PreviewModel.Preview preview = PreviewModel.Preview.empty();
+        boolean showSidebarPreview = previewVisible
+                && terminalColumns >= PREVIEW_MIN_TOTAL_WIDTH
+                && terminalRows >= ROWS_FULL_CHROME;
+        boolean showOverlayPreview = previewVisible
+                && previewFocused
+                && !showSidebarPreview
+                && terminalRows >= ROWS_COMPACT_CHROME;
+        if (previewVisible && previewModel != null) {
+            VisibleEntry currentEntry = treeModel.current();
+            if (currentEntry != null && currentEntry.entry() != null) {
+                preview = previewModel.preview(currentEntry.entry());
+            }
+        }
 
+        int effectiveScroll = 0;
         if (terminalRows >= ROWS_FULL_CHROME) {
-            drawFull(screen, leftPadding, contentWidth, terminalRows, treeModel, tagState,
-                    cutBuffer, statusMessage, segments, plan, nextLevelLabel,
+            effectiveScroll = drawFull(screen, leftPadding, contentWidth, terminalRows,
+                    treeModel, tagState, cutBuffer, statusMessage, preview,
+                    showSidebarPreview, previewFocused, previewScroll,
                     activePrompt, activeModal);
         } else if (terminalRows >= ROWS_COMPACT_CHROME) {
             drawCompact(screen, leftPadding, contentWidth, terminalRows, treeModel, tagState,
-                    cutBuffer, statusMessage, segments, plan, nextLevelLabel,
-                    activePrompt, activeModal);
+                    cutBuffer, statusMessage, activePrompt, activeModal);
         } else {
             drawMinimal(screen, leftPadding, contentWidth, terminalRows, treeModel, tagState,
-                    cutBuffer, statusMessage, segments, plan, nextLevelLabel,
-                    activePrompt, activeModal);
+                    cutBuffer, statusMessage, activePrompt, activeModal);
+        }
+
+        if (showOverlayPreview) {
+            effectiveScroll = drawPreviewOverlay(screen, terminalColumns, terminalRows,
+                    preview, previewScroll);
         }
 
         if (activeConflictModal != null) {
@@ -100,21 +123,33 @@ public final class Layout {
         }
 
         screen.refresh();
+        return effectiveScroll;
     }
 
-    private void drawFull(Screen screen, int left, int width, int rows,
-                           TreeModel treeModel, TagState tagState, CutBuffer cutBuffer,
-                           String statusMessage,
-                           TreeRenderer.Segments segments,
-                           MetadataFormatter.DisplayPlan plan,
-                           String nextLevelLabel,
-                           Prompt activePrompt, Modal activeModal) {
-        drawTitle(screen, left, width, 0, treeModel, tagState, cutBuffer);
+    private int drawFull(Screen screen, int left, int width, int rows,
+                          TreeModel treeModel, TagState tagState, CutBuffer cutBuffer,
+                          String statusMessage,
+                          PreviewModel.Preview preview, boolean showPreview,
+                          boolean previewFocused, int previewScroll,
+                          Prompt activePrompt, Modal activeModal) {
+        drawTitle(screen, left, width, 0, treeModel, tagState, cutBuffer, previewFocused);
         drawSeparator(screen, left, width, 1);
 
         int listTop = 3;
         int listBottom = rows - (activePrompt != null ? 2 : 4);
-        drawList(screen, left, width, listTop, listBottom, treeModel, tagState, segments, plan);
+        int listWidth = width;
+        int effectiveScroll = 0;
+        if (showPreview) {
+            int previewWidth = Math.min(PREVIEW_COLUMN_WIDTH, width - PREVIEW_MIN_COLUMNS);
+            if (previewWidth >= 20) {
+                listWidth = width - previewWidth - 1;
+                int previewLeft = left + listWidth + 1;
+                effectiveScroll = PreviewPane.draw(screen, preview, previewLeft, listTop,
+                        previewWidth, listBottom - listTop, previewScroll,
+                        previewFocused, true);
+            }
+        }
+        drawList(screen, left, listWidth, listTop, listBottom, treeModel, tagState);
 
         if (activePrompt == null) {
             drawSeparator(screen, left, width, rows - 3);
@@ -125,30 +160,26 @@ public final class Layout {
             if (statusMessage != null) {
                 drawStatusLine(screen, left, width, rows - 2, statusMessage);
             } else {
-                drawShortcuts(screen, left, width, rows - 2, nextLevelLabel, cutBuffer);
+                drawShortcuts(screen, left, width, rows - 2, cutBuffer, previewFocused);
             }
         }
+        return effectiveScroll;
     }
 
     private void drawCompact(Screen screen, int left, int width, int rows,
                               TreeModel treeModel, TagState tagState, CutBuffer cutBuffer,
                               String statusMessage,
-                              TreeRenderer.Segments segments,
-                              MetadataFormatter.DisplayPlan plan,
-                              String nextLevelLabel,
                               Prompt activePrompt, Modal activeModal) {
-        drawTitle(screen, left, width, 0, treeModel, tagState, cutBuffer);
+        drawTitle(screen, left, width, 0, treeModel, tagState, cutBuffer, false);
         drawSeparator(screen, left, width, 1);
-
         int listTop = 2;
         int listBottom = rows - (activePrompt != null ? 2 : 1);
-        drawList(screen, left, width, listTop, listBottom, treeModel, tagState, segments, plan);
-
+        drawList(screen, left, width, listTop, listBottom, treeModel, tagState);
         if (activePrompt == null && activeModal == null) {
             if (statusMessage != null) {
                 drawStatusLine(screen, left, width, rows - 1, statusMessage);
             } else {
-                drawShortcuts(screen, left, width, rows - 1, nextLevelLabel, cutBuffer);
+                drawShortcuts(screen, left, width, rows - 1, cutBuffer, false);
             }
         } else if (activeModal != null) {
             drawModalHint(screen, left, width, rows - 1);
@@ -158,25 +189,44 @@ public final class Layout {
     private void drawMinimal(Screen screen, int left, int width, int rows,
                               TreeModel treeModel, TagState tagState, CutBuffer cutBuffer,
                               String statusMessage,
-                              TreeRenderer.Segments segments,
-                              MetadataFormatter.DisplayPlan plan,
-                              String nextLevelLabel,
                               Prompt activePrompt, Modal activeModal) {
-        drawTitle(screen, left, width, 0, treeModel, tagState, cutBuffer);
-
+        drawTitle(screen, left, width, 0, treeModel, tagState, cutBuffer, false);
         int listTop = 1;
         int listBottom = rows - (activePrompt != null ? 2 : 1);
-        drawList(screen, left, width, listTop, listBottom, treeModel, tagState, segments, plan);
-
+        drawList(screen, left, width, listTop, listBottom, treeModel, tagState);
         if (activePrompt == null && activeModal == null) {
             if (statusMessage != null) {
                 drawStatusLine(screen, left, width, rows - 1, statusMessage);
             } else {
-                drawShortcuts(screen, left, width, rows - 1, nextLevelLabel, cutBuffer);
+                drawShortcuts(screen, left, width, rows - 1, cutBuffer, false);
             }
         } else if (activeModal != null) {
             drawModalHint(screen, left, width, rows - 1);
         }
+    }
+
+    private int drawPreviewOverlay(Screen screen, int columns, int rows,
+                                    PreviewModel.Preview preview, int scroll) {
+        int overlayLeft = Math.max(2, columns / 8);
+        int overlayTop = Math.max(2, rows / 8);
+        int overlayWidth = columns - 2 * overlayLeft;
+        int overlayHeight = rows - 2 * overlayTop;
+        int effectiveScroll = PreviewPane.draw(screen, preview, overlayLeft, overlayTop,
+                overlayWidth, overlayHeight, scroll, true, true);
+        // Footer hint for closing the overlay.
+        int hintRow = Math.min(rows - 1, overlayTop + overlayHeight);
+        if (hintRow > overlayTop + overlayHeight - 1) {
+            hintRow = overlayTop + overlayHeight - 1;
+        }
+        String hint = " Esc/Tab/^L: close ";
+        int hintCol = overlayLeft + 1;
+        for (int index = 0; index < hint.length() && hintCol + index < columns;
+             index = index + 1) {
+            screen.setCharacter(hintCol + index, hintRow,
+                    TextCharacter.fromCharacter(hint.charAt(index),
+                            Colors.ORANGE, Colors.DEFAULT)[0]);
+        }
+        return effectiveScroll;
     }
 
     private void drawModalHint(Screen screen, int left, int width, int row) {
@@ -189,23 +239,20 @@ public final class Layout {
     }
 
     private void drawTitle(Screen screen, int left, int width, int row,
-                            TreeModel treeModel, TagState tagState, CutBuffer cutBuffer) {
+                            TreeModel treeModel, TagState tagState, CutBuffer cutBuffer,
+                            boolean previewFocused) {
         int childCount = countChildren(treeModel);
         String path = PathResolver.formatForDisplay(
                 treeModel.directory(), environment.homeDirectory());
-
         String countText = childCount + (childCount == 1 ? " item" : " items");
-
         StringBuilder extras = new StringBuilder();
-        int tagCount = tagState.count();
-        if (tagCount > 0) {
-            extras.append(" \u00b7 ").append(tagCount).append(" tagged");
+        if (tagState.count() > 0) {
+            extras.append(" \u00b7 ").append(tagState.count()).append(" tagged");
         }
         if (!cutBuffer.isEmpty()) {
             String label = cutBuffer.mode() == CutBuffer.Mode.MOVE ? "move" : "copy";
             extras.append(" \u00b7 ").append(label).append(" ").append(cutBuffer.count());
         }
-
         int maxCol = left + width;
         int statsWidth = countText.length() + extras.length();
         int statsStart = maxCol - statsWidth;
@@ -214,22 +261,18 @@ public final class Layout {
         col = drawChunk(screen, col, row, "  ", Colors.DEFAULT, maxCol);
         col = drawChunk(screen, col, row, "dragonet", Colors.ORANGE, maxCol);
         col = drawChunk(screen, col, row, " \u00b7 ", Colors.GRAY_DIM, maxCol);
-
         int availableForPath = statsStart - col - 1;
         if (availableForPath >= 1) {
             if (path.length() > availableForPath) {
-                if (availableForPath > 1) {
-                    path = path.substring(0, availableForPath - 1) + "\u2026";
-                } else {
-                    path = path.substring(0, availableForPath);
-                }
+                path = availableForPath > 1
+                        ? path.substring(0, availableForPath - 1) + "\u2026"
+                        : path.substring(0, availableForPath);
             }
-            drawChunk(screen, col, row, path, Colors.DEFAULT, maxCol);
+            drawChunk(screen, col, row, path,
+                    previewFocused ? Colors.GRAY : Colors.DEFAULT, maxCol);
         }
-
         if (statsStart >= col) {
-            int statsCol = drawChunk(screen, statsStart, row, countText,
-                    Colors.GRAY, maxCol);
+            int statsCol = drawChunk(screen, statsStart, row, countText, Colors.GRAY, maxCol);
             if (extras.length() > 0) {
                 drawChunk(screen, statsCol, row, extras.toString(), Colors.ORANGE, maxCol);
             }
@@ -254,12 +297,13 @@ public final class Layout {
 
     private void drawList(Screen screen, int left, int width,
                            int listTop, int listBottom, TreeModel treeModel,
-                           TagState tagState, TreeRenderer.Segments segments,
-                           MetadataFormatter.DisplayPlan plan) {
+                           TagState tagState) {
         int listHeight = listBottom - listTop;
         if (listHeight < 1) {
             return;
         }
+        TreeRenderer.Segments segments = treeRenderer.chooseSegments(width);
+        MetadataFormatter.DisplayPlan plan = MetadataFormatter.planFor(0, width);
         List<VisibleEntry> entries = treeModel.visibleEntries();
         int cursorIndex = treeModel.cursorIndex();
         int scrollOffset = treeModel.adjustScrollOffset(listHeight);
@@ -291,13 +335,11 @@ public final class Layout {
         } else {
             marker = "  ";
         }
-
         TextColor background;
         TextColor markerColor;
         TextColor treeColor;
         TextColor metadataColor;
         boolean bold = isTagged && !isCursor;
-
         if (isCursor && isTagged) {
             background = Colors.WHITE;
             markerColor = Colors.ORANGE;
@@ -314,34 +356,28 @@ public final class Layout {
             treeColor = Colors.GRAY;
             metadataColor = Colors.GRAY;
         }
-
         if (isCursor) {
             fillRow(screen, left, width, row, background);
         }
-
         int maxCol = left + width;
         int col = left;
-
         for (int index = 0; index < marker.length() && col < maxCol; index = index + 1) {
             screen.setCharacter(col, row,
                     buildChar(marker.charAt(index), markerColor, background, bold));
             col = col + 1;
         }
-
         String prefix = treeRenderer.renderPrefix(entry, segments);
         for (int index = 0; index < prefix.length() && col < maxCol; index = index + 1) {
             screen.setCharacter(col, row,
                     buildChar(prefix.charAt(index), treeColor, background, bold));
             col = col + 1;
         }
-
         String metadata = entry.isPlaceholder() ? "" : buildMetadata(entry.entry(), plan, now);
         int metadataStart = maxCol - metadata.length();
         if (metadataStart < col) {
             metadataStart = col;
             metadata = "";
         }
-
         String name = entry.isPlaceholder()
                 ? entry.placeholderText()
                 : displayName(entry.entry());
@@ -353,16 +389,13 @@ public final class Layout {
         } else {
             nameColor = pickForeground(entry.entry());
         }
-
         int gap = metadata.isEmpty() ? 0 : 1;
         int nameArea = metadataStart - col - gap;
         if (nameArea > 0) {
             if (name.length() > nameArea) {
-                if (nameArea > 1) {
-                    name = name.substring(0, nameArea - 1) + "\u2026";
-                } else {
-                    name = name.substring(0, Math.min(1, name.length()));
-                }
+                name = nameArea > 1
+                        ? name.substring(0, nameArea - 1) + "\u2026"
+                        : name.substring(0, Math.min(1, name.length()));
             }
             for (int index = 0; index < name.length() && col < maxCol; index = index + 1) {
                 screen.setCharacter(col, row,
@@ -370,13 +403,10 @@ public final class Layout {
                 col = col + 1;
             }
         }
-
         while (col < metadataStart && col < maxCol) {
-            screen.setCharacter(col, row,
-                    buildChar(' ', background, background, false));
+            screen.setCharacter(col, row, buildChar(' ', background, background, false));
             col = col + 1;
         }
-
         if (!metadata.isEmpty()) {
             for (int index = 0; index < metadata.length() && metadataStart + index < maxCol;
                  index = index + 1) {
@@ -456,20 +486,20 @@ public final class Layout {
     }
 
     private void drawShortcuts(Screen screen, int left, int width, int row,
-                                String nextLevelLabel, CutBuffer cutBuffer) {
+                                CutBuffer cutBuffer, boolean previewFocused) {
         int maxCol = left + width;
         int col = left + 2;
         col = drawShortcut(screen, col, row, "^X", " Exit", maxCol);
         if (width >= 40) {
             col = drawShortcut(screen, col, row, "^T", " Tag", maxCol);
         }
-        if (!cutBuffer.isEmpty() && width >= 52) {
+        if (width >= 52) {
+            col = drawShortcut(screen, col, row, "^L", " Preview", maxCol);
+        }
+        if (!cutBuffer.isEmpty() && width >= 64) {
             String label = cutBuffer.mode() == CutBuffer.Mode.MOVE ? "move" : "copy";
             col = drawShortcut(screen, col, row, "^U",
                     " Paste (" + label + " " + cutBuffer.count() + ")", maxCol);
-        }
-        if (width >= 64) {
-            col = drawShortcut(screen, col, row, "M-U", " Undo", maxCol);
         }
         if (width >= 76) {
             col = drawShortcut(screen, col, row, "^D", " Del", maxCol);
@@ -478,7 +508,7 @@ public final class Layout {
             col = drawShortcut(screen, col, row, "^R", " Rename", maxCol);
         }
         if (width >= 100) {
-            drawShortcut(screen, col, row, "^K", " Cut", maxCol);
+            drawShortcut(screen, col, row, "^G", " Help", maxCol);
         }
     }
 

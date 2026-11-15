@@ -22,7 +22,7 @@ public final class ConfigBuilder {
     private boolean showHidden = false;
     private Config.SortOrder sort = Config.SortOrder.NAME;
     private boolean sortReverse = false;
-    private boolean preview = true;
+    private boolean preview = false;
     private long previewMaxBytes = 1_048_576L;
     private boolean confirmDelete = true;
     private boolean trashEnabled = true;

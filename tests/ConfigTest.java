@@ -21,7 +21,7 @@ class ConfigTest {
         assertFalse(config.showHidden());
         assertEquals(Config.SortOrder.NAME, config.sort());
         assertFalse(config.sortReverse());
-        assertTrue(config.preview());
+        assertFalse(config.preview());
         assertEquals(1_048_576L, config.previewMaxBytes());
         assertTrue(config.confirmDelete());
         assertTrue(config.trashEnabled());
@@ -41,6 +41,13 @@ class ConfigTest {
         assertEquals("file", config.fileCommand());
         assertEquals("", config.openTextEditor());
         assertEquals("", config.openMediaPlayer());
+    }
+
+    @Test
+    void builderDefaultsMatchConfigDefaults() {
+        Config fromDefaults = Config.defaults();
+        Config fromBuilder = new ConfigBuilder().build();
+        assertEquals(fromDefaults, fromBuilder);
     }
 
     @Test

@@ -12,7 +12,6 @@ lanternaJar="$projectRoot/lib/lanterna-3.1.2.jar"
 
 if [ ! -d "$sourceDirectory" ]; then
     printf '[FAIL] source directory not found: %s\n' "$sourceDirectory" >&2
-    printf '       Check that you are running build.sh from the repository root\n' >&2
     exit 1
 fi
 
@@ -23,8 +22,6 @@ if [ ! -f "$lanternaJar" ]; then
     exit 1
 fi
 
-# Guard: the wrong Lanterna Screen import collapses the whole build with
-# hundreds of cascading "cannot find symbol" errors. Catch it up front.
 if grep -rn '^import com\.googlecode\.lanterna\.Screen;' "$sourceDirectory" > /dev/null 2>&1; then
     printf '[FAIL] wrong Screen import (must be com.googlecode.lanterna.screen.Screen):\n' >&2
     grep -rn '^import com\.googlecode\.lanterna\.Screen;' "$sourceDirectory" >&2

@@ -98,7 +98,7 @@ public record Config(
                 false,
                 SortOrder.NAME,
                 false,
-                true,
+                false,
                 1_048_576L,
                 true,
                 true,
